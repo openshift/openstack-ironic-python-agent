@@ -8131,6 +8131,95 @@ class TestModuleFunctions(base.IronicAgentTest):
             mock.call('modprobe', 'ipmi_si')])
         mocked_log.debug.assert_called_once()
 
+    @mock.patch.object(hardware, 'get_component_devices', autospec=True)
+    def test_md_restart(self, mocked_get_component, mocked_execute):
+        mocked_get_component.return_value = ['/dev/sda1', '/dev/sdb1']
+        mocked_execute.side_effect = [
+            ('No devices found\n', ''),
+            ('', ''),
+            ('', ''),
+        ]
+        hardware.md_restart('/dev/md0')
+        mocked_execute.assert_has_calls([
+            mock.call('dmsetup', 'table', use_standard_locale=True),
+            mock.call('mdadm', '--stop', '/dev/md0'),
+            mock.call('mdadm', '--assemble', '/dev/md0',
+                      '/dev/sda1', '/dev/sdb1')])
+        self.assertEqual(3, mocked_execute.call_count)
+
+    @mock.patch.object(hardware, 'get_component_devices', autospec=True)
+    def test_md_restart_lvm(self, mocked_get_component, mocked_execute):
+        mocked_get_component.return_value = ['/dev/sda1', '/dev/sdb1']
+        mocked_execute.side_effect = [
+            ('vg-root: 0 8192 linear 9:0 2048\n', ''),
+            ('', ''),
+            ('', ''),
+            ('', ''),
+            ('', ''),
+        ]
+        hardware.md_restart('/dev/md0')
+        mocked_execute.assert_has_calls([
+            mock.call('dmsetup', 'table', use_standard_locale=True),
+            mock.call('dmsetup', 'remove_all'),
+            mock.call('mdadm', '--stop', '/dev/md0'),
+            mock.call('mdadm', '--assemble', '/dev/md0',
+                      '/dev/sda1', '/dev/sdb1'),
+            mock.call('vgchange', '-ay')])
+        self.assertEqual(5, mocked_execute.call_count)
+
+    @mock.patch.object(hardware, 'get_component_devices', autospec=True)
+    def test_md_restart_lvm_no_vgchange(self, mocked_get_component,
+                                        mocked_execute):
+        mocked_get_component.return_value = ['/dev/sda1', '/dev/sdb1']
+        mocked_execute.side_effect = [
+            ('vg-root: 0 8192 linear 9:0 2048\n', ''),
+            ('', ''),
+            ('', ''),
+            ('', ''),
+            FileNotFoundError(),
+        ]
+        hardware.md_restart('/dev/md0')
+        mocked_execute.assert_has_calls([
+            mock.call('dmsetup', 'table', use_standard_locale=True),
+            mock.call('dmsetup', 'remove_all'),
+            mock.call('mdadm', '--stop', '/dev/md0'),
+            mock.call('mdadm', '--assemble', '/dev/md0',
+                      '/dev/sda1', '/dev/sdb1'),
+            mock.call('vgchange', '-ay')])
+        self.assertEqual(5, mocked_execute.call_count)
+
+    @mock.patch.object(hardware, 'get_component_devices', autospec=True)
+    def test_md_restart_lvm_remove_fails(self, mocked_get_component,
+                                         mocked_execute):
+        mocked_execute.side_effect = [
+            ('vg-root: 0 8192 linear 9:0 2048\n', ''),
+            processutils.ProcessExecutionError(),
+        ]
+        self.assertRaises(errors.CommandExecutionError,
+                          hardware.md_restart, '/dev/md0')
+        mocked_execute.assert_has_calls([
+            mock.call('dmsetup', 'table', use_standard_locale=True),
+            mock.call('dmsetup', 'remove_all')])
+        self.assertEqual(2, mocked_execute.call_count)
+        mocked_get_component.assert_not_called()
+
+    @mock.patch.object(hardware, 'get_component_devices', autospec=True)
+    def test_md_restart_no_dmsetup(self, mocked_get_component,
+                                   mocked_execute):
+        mocked_get_component.return_value = ['/dev/sda1', '/dev/sdb1']
+        mocked_execute.side_effect = [
+            FileNotFoundError(),
+            ('', ''),
+            ('', ''),
+        ]
+        hardware.md_restart('/dev/md0')
+        mocked_execute.assert_has_calls([
+            mock.call('dmsetup', 'table', use_standard_locale=True),
+            mock.call('mdadm', '--stop', '/dev/md0'),
+            mock.call('mdadm', '--assemble', '/dev/md0',
+                      '/dev/sda1', '/dev/sdb1')])
+        self.assertEqual(3, mocked_execute.call_count)
+
 
 @mock.patch.object(utils, 'execute', autospec=True)
 class TestMultipathEnabled(base.IronicAgentTest):
