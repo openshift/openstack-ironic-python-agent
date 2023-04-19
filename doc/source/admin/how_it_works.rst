@@ -191,14 +191,16 @@ fields:
 ``interfaces``
     list of network interfaces with fields: ``name``, ``mac_address``,
     ``ipv4_address``, ``lldp``, ``vendor``, ``product``, and optionally
-    ``biosdevname``(BIOS given NIC name). If configuration option
+    ``biosdevname`` (BIOS given NIC name). If configuration option
     ``collect_lldp`` is set to True the ``lldp`` field will be populated
     by a list of type-length-value(TLV) fields retrieved using the
     Link Layer Discovery Protocol (LLDP).
 
 ``system_vendor``
     system vendor information from SMBIOS as reported by ``dmidecode``:
-    ``product_name``, ``serial_number`` and ``manufacturer``.
+    ``product_name``, ``serial_number`` and ``manufacturer``, as well as
+    a ``firmware`` structure with fields ``vendor``, ``version`` and
+    ``build_date``.
 
 ``boot``
     boot information with fields: ``current_boot_mode`` (boot mode used for
