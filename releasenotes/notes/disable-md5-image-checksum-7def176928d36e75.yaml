@@ -1,0 +1,12 @@
+---
+features:
+  - |
+    The ``ironic-python-agent`` will now attempt to determine a checksum type
+    by evaluating the length of the supplied checksum. This allows SHA512
+    (SHA-2) and SHA256 (SHA-2) checksums to be identified and utilized without
+    an explicit declaration of the checksum type utilizing the
+    ``os_hash_algo`` value.
+deprecations:
+  - |
+    Support for MD5 checksums have been deprecated and will be removed after
+    the 2024 Release.

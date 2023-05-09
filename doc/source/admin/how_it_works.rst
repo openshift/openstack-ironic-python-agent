@@ -145,8 +145,16 @@ collectors are:
       * ``nics`` - list of objects with keys ``name`` (NIC name) and
         ``numa_node`` (node ID).
 
+``lldp``
+    Collects information about the network connectivity using LLDP_. Provides
+    one key:
+
+    * ``lldp_raw`` - mapping of interface names to lists of raw
+      type-length-value (TLV) records.
+
 .. _hardware: https://pypi.org/project/hardware/
 .. _NUMA: https://en.wikipedia.org/wiki/Non-uniform_memory_access
+.. _LLDP: https://en.wikipedia.org/wiki/Link_Layer_Discovery_Protocol
 
 .. _hardware-inventory:
 
@@ -191,10 +199,13 @@ fields:
 ``interfaces``
     list of network interfaces with fields: ``name``, ``mac_address``,
     ``ipv4_address``, ``lldp``, ``vendor``, ``product``, and optionally
-    ``biosdevname`` (BIOS given NIC name). If configuration option
-    ``collect_lldp`` is set to True the ``lldp`` field will be populated
-    by a list of type-length-value(TLV) fields retrieved using the
-    Link Layer Discovery Protocol (LLDP).
+    ``biosdevname`` (BIOS given NIC name) and ``speed_mbps`` (maximum supported
+    speed).
+
+    .. note::
+       For backward compatibility, interfaces may contain ``lldp`` fields.
+       They are deprecated, consumers should rely on the ``lldp`` inspection
+       collector instead.
 
 ``system_vendor``
     system vendor information from SMBIOS as reported by ``dmidecode``:
@@ -213,3 +224,36 @@ fields:
     .. note::
         This is most likely to be set by the DHCP server. Could be localhost
         if the DHCP server does not set it.
+
+Image Checksums
+---------------
+
+As part of the process of downloading images to be written to disk as part of
+image deployment, a series of fields are utilized to determine if the
+image which has been downloaded matches what the user stated as the expected
+image checksum utilizing the ``instance_info/image_checksum`` value.
+
+OpenStack, as a whole, has replaced the "legacy" ``checksum`` field with
+``os_hash_value`` and ``os_hash_algo`` fields, which allows for an image
+checksum and value to be asserted. An advantage of this is a variety of
+algorithms are available, if a user/operator is so-inclined.
+
+For the purposes of Ironic, we continue to support the pass-through checksum
+field as we support the checksum being retrieved via a URL.
+
+We also support determining the checksum by length.
+
+The field can be utilized to designate:
+
+* A URL to retreive a checksum from.
+* MD5 (Disabled by default, see ``[DEFAULT]md5_enabled`` in the agent
+  configuration file.)
+* SHA-2 based SHA256
+* SHA-2 based SHA512
+
+SHA-3 based checksums are not supported for auto-determination as they can
+have a variable length checksum result. At of when this documentation was
+added, SHA-2 based checksum algorithms have not been withdrawn from from
+approval. If you need to force use of SHA-3 based checksums, you *must*
+utilize the ``os_hash_algo`` setting along with the ``os_hash_value``
+setting.

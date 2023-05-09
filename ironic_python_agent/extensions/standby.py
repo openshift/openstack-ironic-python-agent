@@ -14,6 +14,7 @@
 
 import hashlib
 import os
+import re
 import tempfile
 import time
 from urllib import parse as urlparse
@@ -99,9 +100,35 @@ def _download_with_proxy(image_info, url, image_id):
     return resp
 
 
+def _is_checksum_url(checksum):
+    """Identify if checksum is not a url"""
+    if (checksum.startswith('http://') or checksum.startswith('https://')):
+        return True
+    else:
+        return False
+
+
+MD5_MATCH = r"^([a-fA-F\d]{32})\s"  # MD5 at beginning of line
+MD5_MATCH_END = r"\s([a-fA-F\d]{32})$"  # MD5 at end of line
+MD5_MATCH_ONLY = r"^([a-fA-F\d]{32})$"  # MD5 only
+SHA256_MATCH = r"^([a-fA-F\d]{64})\s"  # SHA256 at beginning of line
+SHA256_MATCH_END = r"\s([a-fA-F\d]{64})$"  # SHA256 at end of line
+SHA256_MATCH_ONLY = r"^([a-fA-F\d]{64})$"  # SHA256 only
+SHA512_MATCH = r"^([a-fA-F\d]{128})\s"  # SHA512 at beginning of line
+SHA512_MATCH_END = r"\s([a-fA-F\d]{128})$"  # SHA512 at end of line
+SHA512_MATCH_ONLY = r"^([a-fA-F\d]{128})$"  # SHA512 only
+FILENAME_MATCH_END = r"\s[*]?{filename}$"  # Filename binary/text end of line
+FILENAME_MATCH_PARENTHESES = r"\s\({filename}\)\s"  # CentOS images
+
+CHECKSUM_MATCHERS = (MD5_MATCH, MD5_MATCH_END, SHA256_MATCH, SHA256_MATCH_END,
+                     SHA512_MATCH, SHA512_MATCH_END)
+CHECKSUM_ONLY_MATCHERS = (MD5_MATCH_ONLY, SHA256_MATCH_ONLY, SHA512_MATCH_ONLY)
+FILENAME_MATCHERS = (FILENAME_MATCH_END, FILENAME_MATCH_PARENTHESES)
+
+
 def _fetch_checksum(checksum, image_info):
     """Fetch checksum from remote location, if needed."""
-    if not (checksum.startswith('http://') or checksum.startswith('https://')):
+    if not _is_checksum_url(checksum):
         # Not a remote checksum, return as it is.
         return checksum
 
@@ -113,17 +140,33 @@ def _fetch_checksum(checksum, image_info):
     elif len(lines) == 1:
         # Special case - checksums file with only the checksum itself
         if ' ' not in lines[0]:
-            return lines[0]
+            for matcher in CHECKSUM_ONLY_MATCHERS:
+                checksum = re.findall(matcher, lines[0])
+                if checksum:
+                    return checksum[0]
+            raise errors.ImageDownloadError(
+                checksum, ("Invalid checksum file (No valid checksum found) %s"
+                           % lines))
 
     # FIXME(dtantsur): can we assume the same name for all images?
     expected_fname = os.path.basename(urlparse.urlparse(
         image_info['urls'][0]).path)
     for line in lines:
-        checksum, fname = line.strip().split(None, 1)
-        # The star symbol designates binary mode, which is the same as text
-        # mode on GNU systems.
-        if fname.strip().lstrip('*') == expected_fname:
-            return checksum.strip()
+        # Ignore comment lines
+        if line.startswith("#"):
+            continue
+
+        # Ignore checksums for other files
+        for matcher in FILENAME_MATCHERS:
+            if re.findall(matcher.format(filename=expected_fname), line):
+                break
+        else:
+            continue
+
+        for matcher in CHECKSUM_MATCHERS:
+            checksum = re.findall(matcher, line)
+            if checksum:
+                return checksum[0]
 
     raise errors.ImageDownloadError(
         checksum, "Checksum file does not contain name %s" % expected_fname)
@@ -263,6 +306,47 @@ def _message_format(msg, image_info, device, partition_uuids):
     return message
 
 
+def _get_algorithm_by_length(checksum):
+    """Determine the SHA-2 algorithm by checksum length.
+
+    :param checksum: The requested checksum.
+    :returns: A hashlib object based upon the checksum
+              or ValueError if the algorthm could not be
+              identified.
+    """
+    # NOTE(TheJulia): This is all based on SHA-2 lengths.
+    # SHA-3 would require a hint, thus ValueError because
+    # it may not be a fixed length. That said, SHA-2 is not
+    # as of this not being added, being withdrawn standards wise.
+    checksum_len = len(checksum)
+    if checksum_len == 128:
+        # Sha512 is 512 bits, or 128 characters
+        return hashlib.new('sha512')
+    elif checksum_len == 64:
+        # SHA256 is 256 bits, or 64 characters
+        return hashlib.new('sha256')
+    elif checksum_len == 32:
+        check_md5_enabled()
+        # This is not super great, but opt-in only.
+        return hashlib.new('md5')  # nosec
+    else:
+        # Previously, we would have just assumed the value was
+        # md5 by default. This way we are a little smarter and
+        # gracefully handle things better when md5 is explicitly
+        # disabled.
+        raise ValueError('Unable to identify checksum algorithm '
+                         'used, and a value is not specified in '
+                         'the os_hash_algo setting.')
+
+
+def check_md5_enabled():
+    """Checks if md5 is permitted, otherwise raises ValueError."""
+    if not CONF.md5_enabled:
+        raise ValueError('MD5 support is disabled, and support '
+                         'will be removed in a 2024 version of '
+                         'Ironic.')
+
+
 class ImageDownload(object):
     """Helper class that opens a HTTP connection to download an image.
 
@@ -292,6 +376,8 @@ class ImageDownload(object):
         self._time = time_obj or time.time()
         self._image_info = image_info
         self._request = None
+        checksum = image_info.get('checksum')
+        retrieved_checksum = False
 
         # Determine the hash algorithm and value will be used for calculation
         # and verification, fallback to md5 if algorithm is not set or not
@@ -300,18 +386,37 @@ class ImageDownload(object):
         if algo and algo in hashlib.algorithms_available:
             self._hash_algo = hashlib.new(algo)
             self._expected_hash_value = image_info.get('os_hash_value')
-        elif image_info.get('checksum'):
+        elif checksum and _is_checksum_url(checksum):
+            # Treat checksum urls as first class request citizens, else
+            # fallback to legacy handling.
+            self._expected_hash_value = _fetch_checksum(
+                checksum,
+                image_info)
+            retrieved_checksum = True
+            if not algo:
+                # Override algorithm not suppied as os_hash_algo
+                self._hash_algo = _get_algorithm_by_length(
+                    self._expected_hash_value)
+        elif checksum:
+            # Fallback to md5 path.
             try:
-                self._hash_algo = hashlib.md5()
+                new_algo = _get_algorithm_by_length(checksum)
+
+                if not new_algo:
+                    # Realistically, this should never happen, but for
+                    # compatability...
+                    # TODO(TheJulia): Remove for a 2024 release.
+                    self._hash_algo = hashlib.new('md5')
+                else:
+                    self._hash_algo = new_algo
             except ValueError as e:
-                message = ('Unable to proceed with image {} as the legacy '
-                           'checksum indicator has been used, which makes use '
-                           'the MD5 algorithm. This algorithm failed to load '
-                           'due to the underlying operating system. Error: '
+                message = ('Unable to proceed with image {} as the '
+                           'checksum indicator has been used but the '
+                           'algorithm could not be identified. Error: '
                            '{}').format(image_info['id'], str(e))
                 LOG.error(message)
                 raise errors.RESTError(details=message)
-            self._expected_hash_value = image_info['checksum']
+            self._expected_hash_value = checksum
         else:
             message = ('Unable to verify image {} with available checksums. '
                        'Please make sure the specified \'os_hash_algo\' '
@@ -322,8 +427,12 @@ class ImageDownload(object):
             LOG.error(message)
             raise errors.RESTError(details=message)
 
-        self._expected_hash_value = _fetch_checksum(self._expected_hash_value,
-                                                    image_info)
+        if not retrieved_checksum:
+            # Fallback to retrieve the checksum if we didn't retrieve it
+            # earlier on.
+            self._expected_hash_value = _fetch_checksum(
+                self._expected_hash_value,
+                image_info)
 
         details = []
         for url in image_info['urls']:
@@ -363,7 +472,10 @@ class ImageDownload(object):
             # this code.
             if chunk:
                 self._last_chunk_time = time.time()
-                self._hash_algo.update(chunk)
+                if isinstance(chunk, str):
+                    self._hash_algo.update(chunk.encode())
+                else:
+                    self._hash_algo.update(chunk)
                 yield chunk
             elif (time.time() - self._last_chunk_time
                   > CONF.image_download_connection_timeout):
@@ -458,6 +570,7 @@ def _validate_image_info(ext, image_info=None, **kwargs):
     """
     image_info = image_info or {}
 
+    checksum_avail = False
     md5sum_avail = False
     os_hash_checksum_avail = False
 
@@ -476,7 +589,13 @@ def _validate_image_info(ext, image_info=None, **kwargs):
                 or not image_info['checksum']):
             raise errors.InvalidCommandParamsError(
                 'Image \'checksum\' must be a non-empty string.')
-        md5sum_avail = True
+        if _is_checksum_url(checksum) or len(checksum) > 32:
+            # Checksum is a URL *or* a greater than 32 characters,
+            # putting it into the realm of sha256 or sha512 and not
+            # the MD5 algorithm.
+            checksum_avail = True
+        elif CONF.md5_enabled:
+            md5sum_avail = True
 
     os_hash_algo = image_info.get('os_hash_algo')
     os_hash_value = image_info.get('os_hash_value')
@@ -491,7 +610,7 @@ def _validate_image_info(ext, image_info=None, **kwargs):
                 'Image \'os_hash_value\' must be a non-empty string.')
         os_hash_checksum_avail = True
 
-    if not (md5sum_avail or os_hash_checksum_avail):
+    if not (checksum_avail or md5sum_avail or os_hash_checksum_avail):
         raise errors.InvalidCommandParamsError(
             'Image checksum is not available, either the \'checksum\' field '
             'or the \'os_hash_algo\' and \'os_hash_value\' fields pair must '
