@@ -23,10 +23,14 @@ from urllib import request
 from ironic_lib.common.i18n import _
 from ironic_lib.exception import IronicException
 from oslo_concurrency import processutils
+from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import fileutils
 
 from ironic_python_agent import utils
+
+
+CONF = cfg.CONF
 
 FW_VERSION_REGEX = r'FW Version:\s*\t*(?P<fw_ver>\d+\.\d+\.\d+)'
 RUNNING_FW_VERSION_REGEX = \
@@ -415,7 +419,10 @@ class NvidiaNicFirmwareBinary(object):
         try:
             LOG.info('Downloading file: %s to %s', self.url,
                      self.dest_file_path)
-            url_data = request.urlopen(self.url)
+            # NOTE(TheJulia: nosec b310 rule below is covered by _process_url
+            url_data = request.urlopen(
+                self.url,
+                timeout=CONF.image_download_connection_timeout)  # nosec
         except urlError.URLError as url_error:
             LOG.error('Failed to open URL data: %s', url_error)
             raise url_error
@@ -429,7 +436,7 @@ class NvidiaNicFirmwareBinary(object):
         """Process the firmware url and download the image to a temporary
 
         destination in the system.
-        The supported firmware URL schemes are (file://, http://)
+        The supported firmware URL schemes are (file://, http://, https://)
         :returns:   None
         :raises:    InvalidURLScheme, for unsupported firmware url
         """
@@ -441,12 +448,12 @@ class NvidiaNicFirmwareBinary(object):
         url_scheme = parsed_url.scheme
         if url_scheme == 'file':
             self._download_file_based_fw()
-        elif url_scheme == 'http':
+        elif url_scheme == 'http' or url_scheme == 'https':
             self._download_http_based_fw()
         else:
             err = 'Firmware URL scheme %s is not supported.' \
                   'The supported firmware URL schemes are' \
-                  '(http://, file://)' % url_scheme
+                  '(http://, https://, file://)' % url_scheme
             raise InvalidURLScheme(error_msg=_(err))
 
     def _get_info(self):
