@@ -326,6 +326,12 @@ cli_opts = [
                      'cleaning from inadvertently destroying a running '
                      'cluster which may be visible over a storage fabric '
                      'such as FibreChannel.'),
+    cfg.IntOpt('http_request_timeout',
+               default=APARAMS.get('ipa-http-request-timeout', 30),
+               min=1,
+               help='Time in seconds to wait for an HTTP request TCP socket '
+                    'used by an API request to a remote service to enter '
+                    'a state where a request can be transmitted.'),
 ]
 
 CONF.register_cli_opts(cli_opts)
