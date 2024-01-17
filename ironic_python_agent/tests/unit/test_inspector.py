@@ -161,10 +161,12 @@ class TestCallInspector(base.IronicAgentTest):
 
         res = inspector.call_inspector(data, failures)
 
-        mock_post.assert_called_once_with('url',
-                                          cert=None, verify=True,
-                                          data='{"data": 42, "error": null}',
-                                          timeout=30)
+        mock_post.assert_called_once_with(
+            'url', data='{"data": 42, "error": null}',
+            cert=None, verify=True,
+            headers={'Content-Type': 'application/json',
+                     'Accept': 'application/json'},
+            timeout=30)
         self.assertEqual(mock_post.return_value.json.return_value, res)
 
     def test_send_failure(self, mock_post):
@@ -178,6 +180,7 @@ class TestCallInspector(base.IronicAgentTest):
         mock_post.assert_called_once_with('url',
                                           cert=None, verify=True,
                                           data='{"data": 42, "error": "boom"}',
+                                          headers=mock.ANY,
                                           timeout=30)
         self.assertEqual(mock_post.return_value.json.return_value, res)
 
@@ -191,6 +194,7 @@ class TestCallInspector(base.IronicAgentTest):
         mock_post.assert_called_once_with('url',
                                           cert=None, verify=True,
                                           data='{"data": 42, "error": null}',
+                                          headers=mock.ANY,
                                           timeout=30)
         self.assertIsNone(res)
 
@@ -204,6 +208,28 @@ class TestCallInspector(base.IronicAgentTest):
                           inspector.call_inspector,
                           data, failures)
         self.assertEqual(5, mock_post.call_count)
+
+    @mock.patch.object(inspector, '_RETRY_WAIT', 0.01)
+    @mock.patch.object(inspector, '_RETRY_WAIT_MAX', 1)
+    def test_inspector_several_urls(self, mock_post):
+        CONF.set_override('inspection_callback_url', 'url1,url2')
+        mock_post.side_effect = [
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError,
+            mock.Mock(status_code=200),
+        ]
+        failures = utils.AccumulatedFailures()
+        data = collections.OrderedDict(data=42)
+        inspector.call_inspector(data, failures)
+        self.assertEqual(3, mock_post.call_count)
+        mock_post.assert_has_calls([
+            mock.call('url1', cert=None, verify=True, headers=mock.ANY,
+                      data='{"data": 42, "error": null}', timeout=30),
+            mock.call('url2', cert=None, verify=True, headers=mock.ANY,
+                      data='{"data": 42, "error": null}', timeout=30),
+            mock.call('url1', cert=None, verify=True, headers=mock.ANY,
+                      data='{"data": 42, "error": null}', timeout=30),
+        ])
 
     @mock.patch.object(inspector, '_RETRY_WAIT', 0.01)
     @mock.patch.object(inspector, '_RETRY_WAIT_MAX', 1)
@@ -233,6 +259,7 @@ class TestCallInspector(base.IronicAgentTest):
         mock_post.assert_called_with('url',
                                      cert=None, verify=True,
                                      data='{"data": 42, "error": null}',
+                                     headers=mock.ANY,
                                      timeout=30)
 
 
