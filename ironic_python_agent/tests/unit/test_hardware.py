@@ -20,7 +20,6 @@ import stat
 import time
 from unittest import mock
 
-from ironic_lib import disk_utils
 from ironic_lib import utils as il_utils
 import netifaces
 from oslo_concurrency import processutils
@@ -29,6 +28,7 @@ from oslo_utils import units
 import pyudev
 from stevedore import extension
 
+from ironic_python_agent import disk_utils
 from ironic_python_agent import errors
 from ironic_python_agent import hardware
 from ironic_python_agent import netutils
@@ -117,7 +117,7 @@ class TestHardwareManagerLoading(base.IronicAgentTest):
         ])
 
 
-@mock.patch.object(hardware, '_udev_settle', lambda *_: None)
+@mock.patch.object(disk_utils, 'udev_settle', lambda *_: None)
 class TestGenericHardwareManager(base.IronicAgentTest):
     def setUp(self):
         super(TestGenericHardwareManager, self).setUp()
@@ -126,6 +126,11 @@ class TestGenericHardwareManager(base.IronicAgentTest):
                      'driver_internal_info': {}}
         CONF.clear_override('disk_wait_attempts')
         CONF.clear_override('disk_wait_delay')
+
+        self.mock_get_managers = mock.patch.object(
+            hardware, 'get_managers', autospec=True)
+        self.get_managers = self.mock_get_managers.start()
+        self.get_managers.return_value = [self.hardware]
 
     def test_get_clean_steps(self):
         expected_clean_steps = [
@@ -4712,7 +4717,7 @@ class TestGenericHardwareManager(base.IronicAgentTest):
         mocked_get_volume_name.side_effect = [
             "/dev/md0", "small"
         ]
-        mocked_get_skip_list.return_value = ["small"]
+        mocked_get_skip_list.return_value = set({"small"})
 
         self.hardware.delete_configuration(self.node, [])
 
@@ -5161,7 +5166,7 @@ class TestModuleFunctions(base.IronicAgentTest):
     @mock.patch.object(os, 'readlink', autospec=True)
     @mock.patch.object(hardware, '_get_device_info',
                        lambda x, y, z: 'FooTastic')
-    @mock.patch.object(hardware, '_udev_settle', autospec=True)
+    @mock.patch.object(disk_utils, 'udev_settle', autospec=True)
     @mock.patch.object(hardware.pyudev.Devices, "from_device_file",
                        autospec=False)
     def test_list_all_block_devices_success(self, mocked_fromdevfile,
@@ -5195,7 +5200,7 @@ class TestModuleFunctions(base.IronicAgentTest):
     @mock.patch.object(os, 'readlink', autospec=True)
     @mock.patch.object(hardware, '_get_device_info',
                        lambda x, y, z: 'FooTastic')
-    @mock.patch.object(hardware, '_udev_settle', autospec=True)
+    @mock.patch.object(disk_utils, 'udev_settle', autospec=True)
     @mock.patch.object(hardware.pyudev.Devices, "from_device_file",
                        autospec=False)
     def test_list_all_block_devices_success_raid(self, mocked_fromdevfile,
@@ -5246,7 +5251,7 @@ class TestModuleFunctions(base.IronicAgentTest):
     @mock.patch.object(os, 'readlink', autospec=True)
     @mock.patch.object(hardware, '_get_device_info',
                        lambda x, y, z: 'FooTastic')
-    @mock.patch.object(hardware, '_udev_settle', autospec=True)
+    @mock.patch.object(disk_utils, 'udev_settle', autospec=True)
     @mock.patch.object(hardware.pyudev.Devices, "from_device_file",
                        autospec=False)
     def test_list_all_block_devices_partuuid_success(
@@ -5279,7 +5284,7 @@ class TestModuleFunctions(base.IronicAgentTest):
     @mock.patch.object(hardware, 'get_multipath_status', autospec=True)
     @mock.patch.object(hardware, '_get_device_info',
                        lambda x, y: "FooTastic")
-    @mock.patch.object(hardware, '_udev_settle', autospec=True)
+    @mock.patch.object(disk_utils, 'udev_settle', autospec=True)
     def test_list_all_block_devices_wrong_block_type(self, mocked_udev,
                                                      mock_mpath_enabled,
                                                      mocked_execute):
@@ -5295,7 +5300,7 @@ class TestModuleFunctions(base.IronicAgentTest):
         mocked_udev.assert_called_once_with()
 
     @mock.patch.object(hardware, 'get_multipath_status', autospec=True)
-    @mock.patch.object(hardware, '_udev_settle', autospec=True)
+    @mock.patch.object(disk_utils, 'udev_settle', autospec=True)
     def test_list_all_block_devices_missing(self, mocked_udev,
                                             mocked_mpath,
                                             mocked_execute):
@@ -5315,10 +5320,6 @@ class TestModuleFunctions(base.IronicAgentTest):
             hardware.list_all_block_devices)
         mocked_udev.assert_called_once_with()
         mocked_execute.assert_has_calls(expected_calls)
-
-    def test__udev_settle(self, mocked_execute):
-        hardware._udev_settle()
-        mocked_execute.assert_called_once_with('udevadm', 'settle')
 
     def test__check_for_iscsi(self, mocked_execute):
         hardware._check_for_iscsi()
