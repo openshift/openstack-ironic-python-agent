@@ -18,17 +18,19 @@ import tempfile
 import time
 from urllib import parse as urlparse
 
-from ironic_lib import disk_utils
 from ironic_lib import exception
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log
+from oslo_utils import units
 import requests
 
+from ironic_python_agent import disk_utils
 from ironic_python_agent import errors
 from ironic_python_agent.extensions import base
 from ironic_python_agent import hardware
 from ironic_python_agent import partition_utils
+from ironic_python_agent import qemu_img
 from ironic_python_agent import utils
 
 CONF = cfg.CONF
@@ -82,8 +84,8 @@ def _download_with_proxy(image_info, url, image_id):
                                 timeout=CONF.image_download_connection_timeout)
             if resp.status_code != 200:
                 msg = ('Received status code {} from {}, expected 200. '
-                       'Response body: {}').format(resp.status_code, url,
-                                                   resp.text)
+                       'Response body: {} Response headers: {}').format(
+                    resp.status_code, url, resp.text, resp.headers)
                 raise errors.ImageDownloadError(image_id, msg)
         except (errors.ImageDownloadError, requests.RequestException) as e:
             if (attempt == CONF.image_download_connection_retries
@@ -129,7 +131,8 @@ def _fetch_checksum(checksum, image_info):
         checksum, "Checksum file does not contain name %s" % expected_fname)
 
 
-def _write_partition_image(image, image_info, device, configdrive=None):
+def _write_partition_image(image, image_info, device, configdrive=None,
+                           source_format=None, is_raw=False, size=0):
     """Call disk_util to create partition and write the partition image.
 
     :param image: Local path to image file to be written to the partition.
@@ -140,6 +143,10 @@ def _write_partition_image(image, image_info, device, configdrive=None):
     :param configdrive: A string containing the location of the config
                         drive as a URL OR the contents (as gzip/base64)
                         of the configdrive. Optional, defaults to None.
+    :param source_format: The actual format of the partition image.
+                         Must be provided if deep image inspection is enabled.
+    :param is_raw: Ironic indicates the image is raw; do not convert it
+    :param size: Virtual size, in MB, of provided image.
 
     :raises: InvalidCommandParamsError if the partition is too small for the
              provided image.
@@ -159,10 +166,9 @@ def _write_partition_image(image, image_info, device, configdrive=None):
     cpu_arch = hardware.dispatch_to_managers('get_cpus').architecture
 
     if image is not None:
-        image_mb = disk_utils.get_image_mb(image)
-        if image_mb > int(root_mb):
+        if size > int(root_mb):
             msg = ('Root partition is too small for requested image. Image '
-                   'virtual size: {} MB, Root size: {} MB').format(image_mb,
+                   'virtual size: {} MB, Root size: {} MB').format(size,
                                                                    root_mb)
             raise errors.InvalidCommandParamsError(msg)
 
@@ -176,12 +182,15 @@ def _write_partition_image(image, image_info, device, configdrive=None):
                                             configdrive=configdrive,
                                             boot_mode=boot_mode,
                                             disk_label=disk_label,
-                                            cpu_arch=cpu_arch)
+                                            cpu_arch=cpu_arch,
+                                            source_format=source_format,
+                                            is_raw=is_raw)
     except processutils.ProcessExecutionError as e:
         raise errors.ImageWriteError(device, e.exit_code, e.stdout, e.stderr)
 
 
-def _write_whole_disk_image(image, image_info, device):
+def _write_whole_disk_image(image, image_info, device, source_format=None,
+                            is_raw=False):
     """Writes a whole disk image to the specified device.
 
     :param image: Local path to image file to be written to the disk.
@@ -189,22 +198,40 @@ def _write_whole_disk_image(image, image_info, device):
                        This parameter is currently unused by the function.
     :param device: The device name, as a string, on which to store the image.
                    Example: '/dev/sda'
-
+    :param source_format: The format of the whole disk image to be written.
+    :param is_raw: Ironic indicates the image is raw; do not convert it
     :raises: ImageWriteError if the command to write the image encounters an
              error.
+    :raises: InvalidImage if asked to write an image without a format when
+                          not permitted
     """
     # FIXME(dtantsur): pass the real node UUID for logging
     disk_utils.destroy_disk_metadata(device, '')
     disk_utils.udev_settle()
 
-    command = ['qemu-img', 'convert',
-               '-t', 'directsync', '-S', '0', '-O', 'host_device', '-W',
-               image, device]
-    LOG.info('Writing image with command: %s', ' '.join(command))
     try:
-        disk_utils.convert_image(image, device, out_format='host_device',
-                                 cache='directsync', out_of_order=True,
-                                 sparse_size='0')
+        if is_raw:
+            # TODO(JayF): We should unify all these dd/convert_image calls
+            # into disk_utils.populate_image().
+            # NOTE(JayF): Since we do not safety check raw images, we must use
+            #  dd to write them to ensure maximum security. This may cause
+            #  failures in situations where images are configured as raw but
+            #  are actually in need of conversion. Those cases can no longer
+            #  be transparently handled safely.
+            LOG.info('Writing raw image %s to device %s', image, device)
+            disk_utils.dd(image, device)
+        else:
+            command = ['qemu-img', 'convert',
+                       '-t', 'directsync', '-S', '0', '-O', 'host_device',
+                       '-W']
+            if source_format:
+                command += ['-f', source_format]
+            command += [image, device]
+            LOG.info('Writing image with command: %s', ' '.join(command))
+            qemu_img.convert_image(image, device, out_format='host_device',
+                                   cache='directsync', out_of_order=True,
+                                   sparse_size='0',
+                                   source_format=source_format)
     except processutils.ProcessExecutionError as e:
         raise errors.ImageWriteError(device, e.exit_code, e.stdout, e.stderr)
 
@@ -222,14 +249,28 @@ def _write_image(image_info, device, configdrive=None):
                         of the configdrive. Optional, defaults to None.
     :raises: ImageWriteError if the command to write the image encounters an
              error.
+    :raises: InvalidImage if the image does not pass security inspection
     """
     starttime = time.time()
     image = _image_location(image_info)
+    ironic_disk_format = image_info.get('disk_format')
+    is_raw = ironic_disk_format == 'raw'
+    # NOTE(JayF): The below method call performs a required security check
+    #             and must remain in place. See bug #2071740
+    source_format, size = disk_utils.get_and_validate_image_format(
+        image, ironic_disk_format)
+    size_mb = int((size + units.Mi - 1) / units.Mi)
+
     uuids = {}
     if image_info.get('image_type') == 'partition':
-        uuids = _write_partition_image(image, image_info, device, configdrive)
+        uuids = _write_partition_image(image, image_info, device,
+                                       configdrive,
+                                       source_format=source_format,
+                                       is_raw=is_raw, size=size_mb)
     else:
-        _write_whole_disk_image(image, image_info, device)
+        _write_whole_disk_image(image, image_info, device,
+                                source_format=source_format,
+                                is_raw=is_raw)
     totaltime = time.time() - starttime
     LOG.info('Image %(image)s written to device %(device)s in %(totaltime)s '
              'seconds', {'image': image, 'device': device,
@@ -292,6 +333,8 @@ class ImageDownload(object):
         self._time = time_obj or time.time()
         self._image_info = image_info
         self._request = None
+        self._bytes_transferred = 0
+        self._expected_size = None
 
         # Determine the hash algorithm and value will be used for calculation
         # and verification, fallback to md5 if algorithm is not set or not
@@ -331,6 +374,8 @@ class ImageDownload(object):
                 LOG.info("Attempting to download image from %s", url)
                 self._request = _download_with_proxy(image_info, url,
                                                      image_info['id'])
+                self._expected_size = self._request.headers.get(
+                    'Content-Length')
             except errors.ImageDownloadError as e:
                 failtime = time.time() - self._time
                 log_msg = ('URL: {}; time: {} '
@@ -363,7 +408,13 @@ class ImageDownload(object):
             # this code.
             if chunk:
                 self._last_chunk_time = time.time()
-                self._hash_algo.update(chunk)
+                if isinstance(chunk, str):
+                    encoded_data = chunk.encode()
+                    self._hash_algo.update(encoded_data)
+                    self._bytes_transferred += len(encoded_data)
+                else:
+                    self._hash_algo.update(chunk)
+                    self._bytes_transferred += len(chunk)
                 yield chunk
             elif (time.time() - self._last_chunk_time
                   > CONF.image_download_connection_timeout):
@@ -399,6 +450,18 @@ class ImageDownload(object):
                                             self._image_info['id'],
                                             self._expected_hash_value,
                                             checksum)
+
+    @property
+    def bytes_transferred(self):
+        """Property value to return the number of bytes transferred."""
+        return self._bytes_transferred
+
+    @property
+    def content_length(self):
+        """Property value to return the server indicated length."""
+        # If none, there is nothing we can do, the server didn't have
+        # a response.
+        return self._expected_size
 
 
 def _download_image(image_info):
@@ -438,9 +501,12 @@ def _download_image(image_info):
 
     totaltime = time.time() - starttime
     LOG.info("Image downloaded from %(image_location)s "
-             "in %(totaltime)s seconds",
+             "in %(totaltime)s seconds. Transferred %(size)s bytes. "
+             "Server originaly reported: %(reported)s.",
              {'image_location': image_location,
-              'totaltime': totaltime})
+              'totaltime': totaltime,
+              'size': image_download.bytes_transferred,
+              'reported': image_download.content_length})
     image_download.verify_image(image_location)
 
 
@@ -603,7 +669,11 @@ class StandbyExtension(base.BaseAgentExtension):
 
         totaltime = time.time() - starttime
         LOG.info("Image streamed onto device %(device)s in %(totaltime)s "
-                 "seconds", {'device': device, 'totaltime': totaltime})
+                 "seconds for %(size)s bytes. Server originaly reported "
+                 "%(reported)s.",
+                 {'device': device, 'totaltime': totaltime,
+                  'size': image_download.bytes_transferred,
+                  'reported': image_download.content_length})
         # Verify if the checksum of the streamed image is correct
         image_download.verify_image(device)
         # Fix any gpt partition
@@ -702,16 +772,20 @@ class StandbyExtension(base.BaseAgentExtension):
         device = hardware.dispatch_to_managers('get_os_install_device',
                                                permit_refresh=True)
 
-        disk_format = image_info.get('disk_format')
+        requested_disk_format = image_info.get('disk_format')
+
         stream_raw_images = image_info.get('stream_raw_images', False)
+
         # don't write image again if already cached
         if self.cached_image_id != image_info['id']:
             if self.cached_image_id is not None:
                 LOG.debug('Already had %s cached, overwriting',
                           self.cached_image_id)
 
-            if stream_raw_images and disk_format == 'raw':
+            if stream_raw_images and requested_disk_format == 'raw':
                 if image_info.get('image_type') == 'partition':
+                    # NOTE(JayF): This only creates partitions due to image
+                    #             being None
                     self.partition_uuids = _write_partition_image(None,
                                                                   image_info,
                                                                   device,
@@ -721,6 +795,9 @@ class StandbyExtension(base.BaseAgentExtension):
                     self.partition_uuids = {}
                     stream_to = device
 
+                # NOTE(JayF): Images that claim to be raw are not inspected at
+                #             all, as they never interact with qemu-img and are
+                #             streamed directly to disk unmodified.
                 self._stream_raw_image_onto_device(image_info, stream_to)
             else:
                 self._cache_and_write_image(image_info, device, configdrive)
