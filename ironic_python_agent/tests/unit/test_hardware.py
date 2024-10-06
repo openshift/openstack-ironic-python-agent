@@ -18,12 +18,12 @@ import logging
 import os
 import re
 import shutil
+import socket
 import stat
 import time
 from unittest import mock
 
 from ironic_lib import utils as il_utils
-import netifaces
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_utils import units
@@ -5968,30 +5968,35 @@ class TestCollectSystemLogs(base.IronicAgentTest):
         self.assertGreaterEqual(len(io_dict), len(expected))
 
 
+<<<<<<< HEAD
+=======
+FakeAddr = namedtuple('FakeAddr', ('family', 'address'))
+
+
+>>>>>>> c1a26585 (Drop dependency on netifaces)
 @mock.patch.object(hardware.GenericHardwareManager, '_get_system_lshw_dict',
                    autospec=True, return_value={'id': 'host'})
 @mock.patch.object(hardware, 'get_managers', autospec=True,
                    return_value=[hardware.GenericHardwareManager()])
-@mock.patch('netifaces.ifaddresses', autospec=True)
+@mock.patch('psutil.net_if_addrs', autospec=True)
 @mock.patch('os.listdir', autospec=True)
 @mock.patch('os.path.exists', autospec=True)
 @mock.patch('builtins.open', autospec=True)
 @mock.patch.object(il_utils, 'execute', autospec=True)
-@mock.patch.object(netutils, 'get_mac_addr', autospec=True)
 @mock.patch.object(netutils, 'interface_has_carrier', autospec=True)
 class TestListNetworkInterfaces(base.IronicAgentTest):
+
     def setUp(self):
         super().setUp()
         self.hardware = hardware.GenericHardwareManager()
 
     def test_list_network_interfaces(self,
                                      mock_has_carrier,
-                                     mock_get_mac,
                                      mocked_execute,
                                      mocked_open,
                                      mocked_exists,
                                      mocked_listdir,
-                                     mocked_ifaddresses,
+                                     mocked_net_if_addrs,
                                      mockedget_managers,
                                      mocked_lshw):
         mocked_lshw.return_value = json.loads(hws.LSHW_JSON_OUTPUT_V2[0])
@@ -6001,16 +6006,24 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ],
+            'foobar': [
+                FakeAddr(socket.AF_INET, '192.168.2.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:1000::101')
+            ]
         }
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
-        mock_get_mac.side_effect = [
-            '00:0c:29:8c:11:b1',
-            None,
-        ]
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(1, len(interfaces))
         self.assertEqual('eth0', interfaces[0].name)
@@ -6024,12 +6037,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
 
     def test_list_network_interfaces_with_biosdevname(self,
                                                       mock_has_carrier,
-                                                      mock_get_mac,
                                                       mocked_execute,
                                                       mocked_open,
                                                       mocked_exists,
                                                       mocked_listdir,
-                                                      mocked_ifaddresses,
+                                                      mocked_net_if_addrs,
                                                       mockedget_managers,
                                                       mocked_lshw):
         mocked_listdir.return_value = ['lo', 'eth0']
@@ -6038,12 +6050,19 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_execute.return_value = ('em0\n', '')
-        mock_get_mac.return_value = '00:0c:29:8c:11:b1'
         mock_has_carrier.return_value = True
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(1, len(interfaces))
@@ -6060,12 +6079,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
     def test_list_network_interfaces_with_lldp(self,
                                                mocked_lldp_info,
                                                mock_has_carrier,
-                                               mock_get_mac,
                                                mocked_execute,
                                                mocked_open,
                                                mocked_exists,
                                                mocked_listdir,
-                                               mocked_ifaddresses,
+                                               mocked_net_if_addrs,
                                                mockedget_managers,
                                                mocked_lshw):
         CONF.set_override('collect_lldp', True)
@@ -6075,9 +6093,17 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_lldp_info.return_value = {'eth0': [
             (0, b''),
@@ -6086,7 +6112,6 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
             (3, b'\x00x')]
         }
         mock_has_carrier.return_value = True
-        mock_get_mac.return_value = '00:0c:29:8c:11:b1'
         mocked_execute.return_value = ('em0\n', '')
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(1, len(interfaces))
@@ -6105,10 +6130,16 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         self.assertEqual('em0', interfaces[0].biosdevname)
 
     @mock.patch.object(netutils, 'get_lldp_info', autospec=True)
-    def test_list_network_interfaces_with_lldp_error(
-            self, mocked_lldp_info, mock_has_carrier, mock_get_mac,
-            mocked_execute, mocked_open, mocked_exists, mocked_listdir,
-            mocked_ifaddresses, mockedget_managers, mocked_lshw):
+    def test_list_network_interfaces_with_lldp_error(self,
+                                                     mocked_lldp_info,
+                                                     mock_has_carrier,
+                                                     mocked_execute,
+                                                     mocked_open,
+                                                     mocked_exists,
+                                                     mocked_listdir,
+                                                     mocked_net_if_addrs,
+                                                     mockedget_managers,
+                                                     mocked_lshw):
         CONF.set_override('collect_lldp', True)
         mocked_listdir.return_value = ['lo', 'eth0']
         mocked_exists.side_effect = [False, False, True]
@@ -6116,14 +6147,21 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_lldp_info.side_effect = Exception('Boom!')
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
-        mock_get_mac.return_value = '00:0c:29:8c:11:b1'
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(1, len(interfaces))
         self.assertEqual('eth0', interfaces[0].name)
@@ -6136,12 +6174,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
 
     def test_list_network_interfaces_no_carrier(self,
                                                 mock_has_carrier,
-                                                mock_get_mac,
                                                 mocked_execute,
                                                 mocked_open,
                                                 mocked_exists,
                                                 mocked_listdir,
-                                                mocked_ifaddresses,
+                                                mocked_net_if_addrs,
                                                 mockedget_managers,
                                                 mocked_lshw):
 
@@ -6152,13 +6189,20 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = [OSError('boom')]
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = False
-        mock_get_mac.return_value = '00:0c:29:8c:11:b1'
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(1, len(interfaces))
         self.assertEqual('eth0', interfaces[0].name)
@@ -6171,12 +6215,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
 
     def test_list_network_interfaces_with_vendor_info(self,
                                                       mock_has_carrier,
-                                                      mock_get_mac,
                                                       mocked_execute,
                                                       mocked_open,
                                                       mocked_exists,
                                                       mocked_listdir,
-                                                      mocked_ifaddresses,
+                                                      mocked_net_if_addrs,
                                                       mockedget_managers,
                                                       mocked_lshw):
         mocked_listdir.return_value = ['lo', 'eth0']
@@ -6186,13 +6229,20 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         read_mock = mocked_open.return_value.read
         mac = '00:0c:29:8c:11:b1'
         read_mock.side_effect = ['0x15b3\n', '0x1014\n']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
-        mock_get_mac.return_value = mac
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(1, len(interfaces))
         self.assertEqual('eth0', interfaces[0].name)
@@ -6206,12 +6256,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
 
     def test_list_network_interfaces_with_bond(self,
                                                mock_has_carrier,
-                                               mock_get_mac,
                                                mocked_execute,
                                                mocked_open,
                                                mocked_exists,
                                                mocked_listdir,
-                                               mocked_ifaddresses,
+                                               mocked_net_if_addrs,
                                                mockedget_managers,
                                                mocked_lshw):
         mocked_listdir.return_value = ['lo', 'bond0']
@@ -6220,16 +6269,20 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'bond0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_execute.return_value = ('\n', '')
         mock_has_carrier.return_value = True
-        mock_get_mac.side_effect = [
-            '00:0c:29:8c:11:b1',
-            None,
-        ]
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(1, len(interfaces))
         self.assertEqual('bond0', interfaces[0].name)
@@ -6242,12 +6295,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
 
     def test_list_network_vlan_interfaces(self,
                                           mock_has_carrier,
-                                          mock_get_mac,
                                           mocked_execute,
                                           mocked_open,
                                           mocked_exists,
                                           mocked_listdir,
-                                          mocked_ifaddresses,
+                                          mocked_net_if_addrs,
                                           mockedget_managers,
                                           mocked_lshw):
         CONF.set_override('enable_vlan_interfaces', 'eth0.100')
@@ -6257,13 +6309,25 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ],
+            'eth0.100': [
+                FakeAddr(socket.AF_INET, '192.168.2.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::1000::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_execute.return_value = ('em0\n', '')
-        mock_get_mac.mock_has_carrier = True
-        mock_get_mac.return_value = '00:0c:29:8c:11:b1'
+        mock_has_carrier.return_value = True
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(2, len(interfaces))
         self.assertEqual('eth0', interfaces[0].name)
@@ -6279,12 +6343,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
     def test_list_network_vlan_interfaces_using_lldp(self,
                                                      mocked_lldp_info,
                                                      mock_has_carrier,
-                                                     mock_get_mac,
                                                      mocked_execute,
                                                      mocked_open,
                                                      mocked_exists,
                                                      mocked_listdir,
-                                                     mocked_ifaddresses,
+                                                     mocked_net_if_addrs,
                                                      mockedget_managers,
                                                      mocked_lshw):
         CONF.set_override('collect_lldp', True)
@@ -6296,13 +6359,37 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
+<<<<<<< HEAD
+=======
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ],
+            'eth0.100': [
+                FakeAddr(socket.AF_INET, '192.168.100.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:0100::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:c1')
+            ],
+            'eth0.101': [
+                FakeAddr(socket.AF_INET, '192.168.101.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:0101::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:c2')
+            ]
+        }
+>>>>>>> c1a26585 (Drop dependency on netifaces)
         mocked_lldp_info.return_value = {'eth0': [
             (0, b''),
             (127, b'\x00\x80\xc2\x03\x00d\x08vlan-100'),
             (127, b'\x00\x80\xc2\x03\x00e\x08vlan-101')]
         }
         mock_has_carrier.return_value = True
-        mock_get_mac.return_value = '00:0c:29:8c:11:b1'
         interfaces = self.hardware.list_network_interfaces()
         self.assertEqual(3, len(interfaces))
         self.assertEqual('eth0', interfaces[0].name)
@@ -6314,22 +6401,21 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         ]
         self.assertEqual(expected_lldp_info, interfaces[0].lldp)
         self.assertEqual('eth0.100', interfaces[1].name)
-        self.assertEqual('00:0c:29:8c:11:b1', interfaces[1].mac_address)
+        self.assertEqual('00:0c:29:8c:11:c1', interfaces[1].mac_address)
         self.assertIsNone(interfaces[1].lldp)
         self.assertEqual('eth0.101', interfaces[2].name)
-        self.assertEqual('00:0c:29:8c:11:b1', interfaces[2].mac_address)
+        self.assertEqual('00:0c:29:8c:11:c2', interfaces[2].mac_address)
         self.assertIsNone(interfaces[2].lldp)
 
     @mock.patch.object(netutils, 'LOG', autospec=True)
     def test_list_network_vlan_invalid_int(self,
                                            mocked_log,
                                            mock_has_carrier,
-                                           mock_get_mac,
                                            mocked_execute,
                                            mocked_open,
                                            mocked_exists,
                                            mocked_listdir,
-                                           mocked_ifaddresses,
+                                           mocked_net_if_addrs,
                                            mockedget_managers,
                                            mocked_lshw):
         CONF.set_override('collect_lldp', True)
@@ -6340,13 +6426,20 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
-        mocked_ifaddresses.return_value = {
-            netifaces.AF_INET: [{'addr': '192.168.1.2'}],
-            netifaces.AF_INET6: [{'addr': 'fd00::101'}]
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ]
         }
         mocked_execute.return_value = ('em0\n', '')
-        mock_get_mac.mock_has_carrier = True
-        mock_get_mac.return_value = '00:0c:29:8c:11:b1'
+        mock_has_carrier.return_value = True
 
         self.hardware.list_network_interfaces()
         mocked_log.warning.assert_called_once_with(
@@ -6356,12 +6449,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
     def test_list_network_vlan_interfaces_using_lldp_all(self,
                                                          mocked_lldp_info,
                                                          mock_has_carrier,
-                                                         mock_get_mac,
                                                          mocked_execute,
                                                          mocked_open,
                                                          mocked_exists,
                                                          mocked_listdir,
-                                                         mocked_ifaddresses,
+                                                         mocked_net_if_addrs,
                                                          mockedget_managers,
                                                          mocked_lshw):
         CONF.set_override('collect_lldp', True)
@@ -6373,6 +6465,43 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         mocked_open.return_value.__exit__ = mock.Mock()
         read_mock = mocked_open.return_value.read
         read_mock.side_effect = ['1']
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ],
+            'eth1': [
+                FakeAddr(socket.AF_INET, '192.168.2.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:1000::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b2')
+            ],
+            'eth0.100': [
+                FakeAddr(socket.AF_INET, '192.168.100.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:0100::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:c1')
+            ],
+            'eth0.101': [
+                FakeAddr(socket.AF_INET, '192.168.101.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:0101::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:c2')
+            ],
+            'eth1.102': [
+                FakeAddr(socket.AF_INET, '192.168.102.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:1102::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:d1')
+            ],
+            'eth1.103': [
+                FakeAddr(socket.AF_INET, '192.168.103.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:1103::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:d2')
+            ]
+        }
         mocked_lldp_info.return_value = {'eth0': [
             (0, b''),
             (127, b'\x00\x80\xc2\x03\x00d\x08vlan-100'),
