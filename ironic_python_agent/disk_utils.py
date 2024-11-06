@@ -26,7 +26,6 @@ import re
 import stat
 import time
 
-from ironic_lib.common.i18n import _
 from ironic_lib import exception
 from ironic_lib import utils
 from oslo_concurrency import processutils
@@ -150,21 +149,6 @@ def get_partition_table_type(device):
 
     LOG.warning("Unable to get partition table type for device %s", device)
     return 'unknown'
-
-
-def _blkid(device, probe=False, fields=None):
-    args = []
-    if probe:
-        args.append('-p')
-    if fields:
-        args += sum((['-s', field] for field in fields), [])
-
-    output, err = utils.execute('blkid', device, *args,
-                                use_standard_locale=True)
-    if output.strip():
-        return output.split(': ', 1)[1]
-    else:
-        return ""
 
 
 def _lsblk(device, deps=True, fields=None):
@@ -377,8 +361,8 @@ def is_block_device(dev):
             time.sleep(1)
         else:
             return stat.S_ISBLK(s.st_mode)
-    msg = _("Unable to stat device %(dev)s after attempting to verify "
-            "%(attempts)d times.") % {'dev': dev, 'attempts': attempts}
+    msg = ("Unable to stat device %(dev)s after attempting to verify "
+           "%(attempts)d times.") % {'dev': dev, 'attempts': attempts}
     LOG.error(msg)
     raise exception.InstanceDeployFailure(msg)
 
@@ -471,22 +455,38 @@ def get_and_validate_image_format(filename, ironic_disk_format):
     return img_format, size
 
 
-def populate_image(src, dst, conv_flags=None,
-                   source_format=None, is_raw=False):
+def populate_image(src, dst, conv_flags=None, source_format=None, is_raw=False,
+                   sparse_size='0', out_format='raw', **convert_args):
     """Populate a provided destination device with the image
 
     :param src: An image already security checked in format disk_format
     :param dst: A location, usually a partition or block device,
                 to write the image
     :param conv_flags: Conversion flags to pass to dd if provided
-    :param source_format: format of the image
     :param is_raw: Ironic indicates image is raw; do not convert!
+    :param sparse_size: Sparse size to pass to qemu_img
+    :param source_format: format of the image
+    :param out_format: Output format
+    :param convert_args: Additional arguments to optionally pass to qemu_img
     """
-    if is_raw:
-        dd(src, dst, conv_flags=conv_flags)
-    else:
-        qemu_img.convert_image(src, dst, 'raw', True,
-                               sparse_size='0', source_format=source_format)
+    try:
+        if is_raw:
+            # NOTE(JayF): Since we do not safety check raw images, we must use
+            #  dd to write them to ensure maximum security. This may cause
+            #  failures in situations where images are configured as raw but
+            #  are actually in need of conversion. Those cases can no longer
+            #  be transparently handled safely.
+            LOG.info('Writing raw image %s to device %s', src, dst)
+            dd(src, dst, conv_flags=conv_flags)
+        else:
+            qemu_img.convert_image(src, dst,
+                                   out_format=out_format,
+                                   run_as_root=True,
+                                   sparse_size=sparse_size,
+                                   source_format=source_format,
+                                   **convert_args)
+    except processutils.ProcessExecutionError as e:
+        raise errors.ImageWriteError(dst, e.exit_code, e.stdout, e.stderr)
 
 
 def block_uuid(dev):
@@ -606,8 +606,8 @@ def _fix_gpt_structs(device, node_uuid):
             utils.execute('sgdisk', '-e', device)
     except (processutils.UnknownArgumentError,
             processutils.ProcessExecutionError, OSError) as e:
-        msg = (_('Failed to fix GPT data structures on disk %(disk)s '
-                 'for node %(node)s. Error: %(error)s') %
+        msg = ('Failed to fix GPT data structures on disk %(disk)s '
+               'for node %(node)s. Error: %(error)s' %
                {'disk': device, 'node': node_uuid, 'error': e})
         LOG.error(msg)
         raise exception.InstanceDeployFailure(msg)
@@ -628,8 +628,8 @@ def fix_gpt_partition(device, node_uuid):
         if disk_is_gpt_partitioned:
             _fix_gpt_structs(device, node_uuid)
     except Exception as e:
-        msg = (_('Failed to fix GPT partition on disk %(disk)s '
-                 'for node %(node)s. Error: %(error)s') %
+        msg = ('Failed to fix GPT partition on disk %(disk)s '
+               'for node %(node)s. Error: %(error)s' %
                {'disk': device, 'node': node_uuid, 'error': e})
         LOG.error(msg)
         raise exception.InstanceDeployFailure(msg)
@@ -718,8 +718,6 @@ def trigger_device_rescan(device, attempts=None):
         return True
 
 
-# NOTE(dtantsur): this function was in ironic_lib.utils before migration
-# (presumably to avoid a circular dependency with disk_partitioner)
 def wait_for_disk_to_become_available(device):
     """Wait for a disk device to become available.
 
@@ -790,13 +788,12 @@ def wait_for_disk_to_become_available(device):
     except tenacity.RetryError:
         if pids[0]:
             raise exception.IronicException(
-                _('Processes with the following PIDs are holding '
-                  'device %(device)s: %(pids)s. '
-                  'Timed out waiting for completion.')
+                ('Processes with the following PIDs are holding '
+                 'device %(device)s: %(pids)s. '
+                 'Timed out waiting for completion.')
                 % {'device': device, 'pids': ', '.join(pids[0])})
         else:
             raise exception.IronicException(
-                _('Fuser exited with "%(fuser_err)s" while checking '
-                  'locks for device %(device)s. Timed out waiting for '
-                  'completion.')
-                % {'device': device, 'fuser_err': stderr[0]})
+                ('Fuser exited with "%(fuser_err)s" while checking '
+                 'locks for device %(device)s. Timed out waiting for '
+                 'completion.') % {'device': device, 'fuser_err': stderr[0]})
