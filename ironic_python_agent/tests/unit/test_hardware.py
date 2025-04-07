@@ -6147,6 +6147,7 @@ class TestCollectSystemLogs(base.IronicAgentTest):
 FakeAddr = namedtuple('FakeAddr', ('family', 'address'))
 
 
+@mock.patch.object(netutils, 'get_mac_addr', autospec=True)
 @mock.patch.object(hardware.GenericHardwareManager, '_get_system_lshw_dict',
                    autospec=True, return_value={'id': 'host'})
 @mock.patch.object(hardware, 'get_managers', autospec=True,
@@ -6171,7 +6172,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                      mocked_listdir,
                                      mocked_net_if_addrs,
                                      mockedget_managers,
-                                     mocked_lshw):
+                                     mocked_lshw,
+                                     mocked_get_mac_addr):
         mocked_lshw.return_value = json.loads(hws.LSHW_JSON_OUTPUT_V2[0])
         mocked_listdir.return_value = ['lo', 'eth0', 'foobar']
         mocked_exists.side_effect = [False, False, True, True]
@@ -6195,6 +6197,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_INET6, 'fd00:1000::101')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
         interfaces = self.hardware.list_network_interfaces()
@@ -6216,7 +6222,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                       mocked_listdir,
                                                       mocked_net_if_addrs,
                                                       mockedget_managers,
-                                                      mocked_lshw):
+                                                      mocked_lshw,
+                                                      mocked_get_mac_addr):
         mocked_listdir.return_value = ['lo', 'eth0']
         mocked_exists.side_effect = [False, False, True]
         mocked_open.return_value.__enter__ = lambda s: s
@@ -6235,6 +6242,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
         interfaces = self.hardware.list_network_interfaces()
@@ -6258,7 +6269,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                mocked_listdir,
                                                mocked_net_if_addrs,
                                                mockedget_managers,
-                                               mocked_lshw):
+                                               mocked_lshw,
+                                               mocked_get_mac_addr):
         CONF.set_override('collect_lldp', True)
         mocked_listdir.return_value = ['lo', 'eth0']
         mocked_exists.side_effect = [False, False, True]
@@ -6278,6 +6290,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_lldp_info.return_value = {'eth0': [
             (0, b''),
             (1, b'\x04\x88Z\x92\xecTY'),
@@ -6312,7 +6328,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                      mocked_listdir,
                                                      mocked_net_if_addrs,
                                                      mockedget_managers,
-                                                     mocked_lshw):
+                                                     mocked_lshw,
+                                                     mocked_get_mac_addr):
         CONF.set_override('collect_lldp', True)
         mocked_listdir.return_value = ['lo', 'eth0']
         mocked_exists.side_effect = [False, False, True]
@@ -6332,6 +6349,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_lldp_info.side_effect = Exception('Boom!')
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
@@ -6353,7 +6374,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                 mocked_listdir,
                                                 mocked_net_if_addrs,
                                                 mockedget_managers,
-                                                mocked_lshw):
+                                                mocked_lshw,
+                                                mocked_get_mac_addr):
 
         mockedget_managers.return_value = [hardware.GenericHardwareManager()]
         mocked_listdir.return_value = ['lo', 'eth0']
@@ -6374,6 +6396,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = False
         interfaces = self.hardware.list_network_interfaces()
@@ -6394,7 +6420,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                       mocked_listdir,
                                                       mocked_net_if_addrs,
                                                       mockedget_managers,
-                                                      mocked_lshw):
+                                                      mocked_lshw,
+                                                      mocked_get_mac_addr):
         mocked_listdir.return_value = ['lo', 'eth0']
         mocked_exists.side_effect = [False, False, True]
         mocked_open.return_value.__enter__ = lambda s: s
@@ -6414,6 +6441,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
         interfaces = self.hardware.list_network_interfaces()
@@ -6435,7 +6466,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                mocked_listdir,
                                                mocked_net_if_addrs,
                                                mockedget_managers,
-                                               mocked_lshw):
+                                               mocked_lshw,
+                                               mocked_get_mac_addr):
         mocked_listdir.return_value = ['lo', 'bond0']
         mocked_exists.side_effect = [False, False, True]
         mocked_open.return_value.__enter__ = lambda s: s
@@ -6454,6 +6486,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'bond0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_execute.return_value = ('\n', '')
         mock_has_carrier.return_value = True
         interfaces = self.hardware.list_network_interfaces()
@@ -6478,7 +6514,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                       mocked_listdir,
                                                       mocked_net_if_addrs,
                                                       mockedget_managers,
-                                                      mocked_lshw):
+                                                      mocked_lshw,
+                                                      mocked_get_mac_addr):
         mocked_listdir.return_value = ['lo', 'eth0']
         mocked_exists.side_effect = [False, False, True]
         mocked_open.return_value.__enter__ = lambda s: s
@@ -6497,6 +6534,10 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
         mock_get_pci.return_value = '0000:02:00.0'
@@ -6522,7 +6563,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                           mocked_listdir,
                                           mocked_net_if_addrs,
                                           mockedget_managers,
-                                          mocked_lshw):
+                                          mocked_lshw,
+                                          mocked_get_mac_addr):
         CONF.set_override('enable_vlan_interfaces', 'eth0.100')
         mocked_listdir.return_value = ['lo', 'eth0']
         mocked_exists.side_effect = [False, False, True]
@@ -6547,6 +6589,11 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+            'eth0.100': '00:0c:29:8c:11:b1',
+        }.get(iface)
         mocked_execute.return_value = ('em0\n', '')
         mock_has_carrier.return_value = True
         interfaces = self.hardware.list_network_interfaces()
@@ -6570,7 +6617,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                      mocked_listdir,
                                                      mocked_net_if_addrs,
                                                      mockedget_managers,
-                                                     mocked_lshw):
+                                                     mocked_lshw,
+                                                     mocked_get_mac_addr):
         CONF.set_override('collect_lldp', True)
         CONF.set_override('enable_vlan_interfaces', 'eth0')
         mocked_listdir.return_value = ['lo', 'eth0']
@@ -6602,6 +6650,12 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                 FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:c2')
             ]
         }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+            'eth0.100': '00:0c:29:8c:11:c1',
+            'eth0.101': '00:0c:29:8c:11:c2',
+        }.get(iface)
         mocked_lldp_info.return_value = {'eth0': [
             (0, b''),
             (127, b'\x00\x80\xc2\x03\x00d\x08vlan-100'),
@@ -6635,7 +6689,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                            mocked_listdir,
                                            mocked_net_if_addrs,
                                            mockedget_managers,
-                                           mocked_lshw):
+                                           mocked_lshw,
+                                           mocked_get_mac_addr):
         CONF.set_override('collect_lldp', True)
         CONF.set_override('enable_vlan_interfaces', 'enp0s1')
         mocked_listdir.return_value = ['lo', 'eth0']
@@ -6673,7 +6728,8 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
                                                          mocked_listdir,
                                                          mocked_net_if_addrs,
                                                          mockedget_managers,
-                                                         mocked_lshw):
+                                                         mocked_lshw,
+                                                         mocked_get_mac_addr):
         CONF.set_override('collect_lldp', True)
         CONF.set_override('enable_vlan_interfaces', 'all')
         mocked_listdir.return_value = ['lo', 'eth0', 'eth1']
