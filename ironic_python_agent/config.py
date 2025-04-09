@@ -292,12 +292,6 @@ cli_opts = [
                     'This variable can be also configured via image_info.'
                     'Value coming from image_info takes precedence over'
                     'value coming from command line or configuration file.'),
-    cfg.BoolOpt('agent_token_required',
-                default=APARAMS.get('ipa-agent-token-required', False),
-                help='Control to enforce if API command requests should '
-                     'enforce token validation. The configuration provided '
-                     'by the conductor MAY override this and force this '
-                     'setting to be changed to True in memory.'),
     cfg.IntOpt('image_download_connection_timeout', min=1,
                default=APARAMS.get(
                    'ipa-image-download-connection-timeout', 60),
@@ -443,6 +437,13 @@ disk_part_opts = [
 ]
 
 container_opts = [
+    cfg.BoolOpt('allow_arbitrary_containers',
+                default=False,
+                help='Allow arbitrary containers to be run'
+                     'without restriction.'),
+    cfg.ListOpt('allowed_containers',
+                default=[],
+                help='List of allowed containers that can be run.'),
     cfg.StrOpt('container_steps_file',
                default='/etc/ironic-python-agent.d/mysteps.yaml',
                help='Path to the YAML file containing container-based'
@@ -457,13 +458,9 @@ container_opts = [
     cfg.ListOpt('run_options',
                 default=['--rm', '--network=host', '--tls-verify=false'],
                 help='Options to use when running containers.'),
-    cfg.BoolOpt('allow_arbitrary_containers',
-                default=False,
-                help='Allow arbitrary containers to be run'
-                     'without restriction.'),
-    cfg.ListOpt('allowed_containers',
-                default=[],
-                help='List of allowed containers that can be run.'),
+    cfg.StrOpt('container_conf_file',
+               default='/etc/containers/containers.conf',
+               help='Path to the container configuration file in the IPA RAM')
 ]
 
 
