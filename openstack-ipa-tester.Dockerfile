@@ -1,7 +1,5 @@
 FROM registry.ci.openshift.org/ocp/4.20:base-rhel9
 
-ENV TOX_CONSTRAINTS_FILE="https://releases.openstack.org/constraints/upper/2025.1"
-
 RUN dnf install -y python3-devel python3-pip \
  && dnf clean all \
  && rm -rf /var/cache/yum \
