@@ -1049,7 +1049,9 @@ class TestGenericHardwareManager(base.IronicAgentTest):
         self.assertEqual('x86_64', cpus.architecture)
         self.assertEqual([], cpus.flags)
 
-        self.assertEqual(["WARNING:root:No CPU flags found"], cm.output)
+        self.assertEqual(
+            ["WARNING:ironic_python_agent.hardware:No CPU flags found"],
+            cm.output)
 
     @mock.patch("builtins.open", new_callable=mock.mock_open)
     @mock.patch.object(utils, 'execute', autospec=True)
@@ -1072,8 +1074,10 @@ class TestGenericHardwareManager(base.IronicAgentTest):
 
         # Check if the warning was logged
         self.assertEqual([
-            "WARNING:root:Malformed CPU flags information: I am not a flag",
-            "WARNING:root:No CPU flags found"], cm.output)
+            "WARNING:ironic_python_agent.hardware:"
+            "Malformed CPU flags information: I am not a flag",
+            "WARNING:ironic_python_agent.hardware:No CPU flags found"],
+            cm.output)
 
     @mock.patch('psutil.virtual_memory', autospec=True)
     @mock.patch.object(utils, 'execute', autospec=True)
@@ -1229,6 +1233,35 @@ class TestGenericHardwareManager(base.IronicAgentTest):
         self.assertEqual([mock.call(all_serial_and_wwn=False),
                           mock.call(block_type='part', ignore_raid=True)],
                          list_mock.call_args_list)
+
+    @mock.patch.object(hardware.GenericHardwareManager, 'filter_device',
+                       autospec=True)
+    @mock.patch.object(hardware, 'list_all_block_devices', autospec=True)
+    def test_list_block_devices_with_filter_device(self, list_mock,
+                                                   filter_mock):
+        device = hardware.BlockDevice('/dev/hdaa', 'small', 65535, False)
+        list_mock.return_value = [
+            device,
+            hardware.BlockDevice('/dev/rogue', 'fake', 42, True),
+        ]
+        seen_devices = set()
+
+        def _filter(hwmgr, device_to_filter):
+            self.assertIsInstance(device_to_filter, hardware.BlockDevice)
+            seen_devices.add(device_to_filter.name)
+            if 'rogue' in device_to_filter.name:
+                return None
+            self.assertEqual(device, device_to_filter)
+            return device_to_filter
+
+        filter_mock.side_effect = _filter
+
+        devices = self.hardware.list_block_devices()
+
+        self.assertEqual([device], devices)
+        self.assertEqual({'/dev/hdaa', '/dev/rogue'}, seen_devices)
+
+        list_mock.assert_called_once_with(all_serial_and_wwn=False)
 
     def test_get_skip_list_from_node_block_devices_with_skip_list(self):
         block_devices = [
@@ -5511,6 +5544,27 @@ class TestGenericHardwareManager(base.IronicAgentTest):
 
         self.assertEqual([device], detected_usb_devices)
 
+    @mock.patch.object(hardware.GenericHardwareManager, 'filter_device',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_get_usb_devices_with_filter_device(self, mocked_execute,
+                                                mocked_filter):
+        seen_devices = set()
+        device = hardware.USBInfo('MyProduct', 'MyVendor', 'USB:1:2')
+
+        def _filter(hwmgr, device_to_filter):
+            self.assertIsInstance(device_to_filter, hardware.USBInfo)
+            self.assertEqual(device, device_to_filter)
+            seen_devices.add(device_to_filter.product)
+            return None
+
+        mocked_filter.side_effect = _filter
+        mocked_execute.return_value = hws.LSHW_JSON_OUTPUT_V1
+        detected_usb_devices = self.hardware.get_usb_devices()
+
+        self.assertEqual([], detected_usb_devices)
+        self.assertEqual({'MyProduct'}, seen_devices)
+
     @mock.patch.object(utils, 'get_agent_params',
                        lambda: {'BOOTIF': 'boot:if'})
     @mock.patch.object(os.path, 'isdir', autospec=True)
@@ -5626,12 +5680,12 @@ class TestGenericHardwareManager(base.IronicAgentTest):
 @mock.patch.object(hardware, '_md_scan_and_assemble', autospec=True)
 @mock.patch.object(hardware, '_check_for_iscsi', autospec=True)
 @mock.patch.object(time, 'sleep', autospec=True)
-class TestEvaluateHardwareSupport(base.IronicAgentTest):
+class TestInitializeSupport(base.IronicAgentTest):
     def setUp(self):
-        super(TestEvaluateHardwareSupport, self).setUp()
+        super().setUp()
         self.hardware = hardware.GenericHardwareManager()
 
-    def test_evaluate_hw_waits_for_disks(
+    def test_initialize_waits_for_disks(
             self, mocked_sleep, mocked_check_for_iscsi,
             mocked_md_assemble, mocked_get_inst_dev,
             mocked_load_ipmi_modules, mocked_enable_mpath):
@@ -5640,33 +5694,31 @@ class TestEvaluateHardwareSupport(base.IronicAgentTest):
             None
         ]
 
-        result = self.hardware.evaluate_hardware_support()
+        self.hardware.initialize()
 
         self.assertTrue(mocked_load_ipmi_modules.called)
         self.assertTrue(mocked_check_for_iscsi.called)
         self.assertTrue(mocked_md_assemble.called)
-        self.assertEqual(hardware.HardwareSupport.GENERIC, result)
         mocked_get_inst_dev.assert_called_with(mock.ANY)
         self.assertEqual(2, mocked_get_inst_dev.call_count)
         mocked_sleep.assert_called_once_with(CONF.disk_wait_delay)
 
     @mock.patch.object(hardware, 'LOG', autospec=True)
-    def test_evaluate_hw_no_wait_for_disks(
+    def test_initialize_no_wait_for_disks(
             self, mocked_log, mocked_sleep, mocked_check_for_iscsi,
             mocked_md_assemble, mocked_get_inst_dev,
             mocked_load_ipmi_modules, mocked_enable_mpath):
         CONF.set_override('disk_wait_attempts', '0')
 
-        result = self.hardware.evaluate_hardware_support()
+        self.hardware.initialize()
 
         self.assertTrue(mocked_check_for_iscsi.called)
-        self.assertEqual(hardware.HardwareSupport.GENERIC, result)
         self.assertFalse(mocked_get_inst_dev.called)
         self.assertFalse(mocked_sleep.called)
         self.assertFalse(mocked_log.called)
 
     @mock.patch.object(hardware, 'LOG', autospec=True)
-    def test_evaluate_hw_waits_for_disks_nonconfigured(
+    def test_initialize_waits_for_disks_nonconfigured(
             self, mocked_log, mocked_sleep, mocked_check_for_iscsi,
             mocked_md_assemble, mocked_get_inst_dev,
             mocked_load_ipmi_modules, mocked_enable_mpath):
@@ -5685,7 +5737,7 @@ class TestEvaluateHardwareSupport(base.IronicAgentTest):
             None
         ]
 
-        self.hardware.evaluate_hardware_support()
+        self.hardware.initialize()
 
         mocked_get_inst_dev.assert_called_with(mock.ANY)
         self.assertEqual(10, mocked_get_inst_dev.call_count)
@@ -5696,13 +5748,13 @@ class TestEvaluateHardwareSupport(base.IronicAgentTest):
             CONF.disk_wait_delay * 9)
 
     @mock.patch.object(hardware, 'LOG', autospec=True)
-    def test_evaluate_hw_waits_for_disks_configured(self, mocked_log,
-                                                    mocked_sleep,
-                                                    mocked_check_for_iscsi,
-                                                    mocked_md_assemble,
-                                                    mocked_get_inst_dev,
-                                                    mocked_load_ipmi_modules,
-                                                    mocked_enable_mpath):
+    def test_initialize_waits_for_disks_configured(self, mocked_log,
+                                                   mocked_sleep,
+                                                   mocked_check_for_iscsi,
+                                                   mocked_md_assemble,
+                                                   mocked_get_inst_dev,
+                                                   mocked_load_ipmi_modules,
+                                                   mocked_enable_mpath):
         CONF.set_override('disk_wait_attempts', '1')
 
         mocked_get_inst_dev.side_effect = [
@@ -5711,7 +5763,7 @@ class TestEvaluateHardwareSupport(base.IronicAgentTest):
             None
         ]
 
-        self.hardware.evaluate_hardware_support()
+        self.hardware.initialize()
 
         mocked_get_inst_dev.assert_called_with(mock.ANY)
         self.assertEqual(1, mocked_get_inst_dev.call_count)
@@ -5719,36 +5771,35 @@ class TestEvaluateHardwareSupport(base.IronicAgentTest):
         mocked_log.warning.assert_called_once_with(
             'The root device was not detected')
 
-    def test_evaluate_hw_disks_timeout_unconfigured(self, mocked_sleep,
-                                                    mocked_check_for_iscsi,
-                                                    mocked_md_assemble,
-                                                    mocked_get_inst_dev,
-                                                    mocked_load_ipmi_modules,
-                                                    mocked_enable_mpath):
+    def test_initialize_disks_timeout_unconfigured(self, mocked_sleep,
+                                                   mocked_check_for_iscsi,
+                                                   mocked_md_assemble,
+                                                   mocked_get_inst_dev,
+                                                   mocked_load_ipmi_modules,
+                                                   mocked_enable_mpath):
         mocked_get_inst_dev.side_effect = errors.DeviceNotFound('boom')
-        self.hardware.evaluate_hardware_support()
+        self.hardware.initialize()
         mocked_sleep.assert_called_with(3)
 
-    def test_evaluate_hw_disks_timeout_configured(self, mocked_sleep,
-                                                  mocked_check_for_iscsi,
-                                                  mocked_md_assemble,
-                                                  mocked_root_dev,
-                                                  mocked_load_ipmi_modules,
-                                                  mocked_enable_mpath):
+    def test_initialize_disks_timeout_configured(self, mocked_sleep,
+                                                 mocked_check_for_iscsi,
+                                                 mocked_md_assemble,
+                                                 mocked_root_dev,
+                                                 mocked_load_ipmi_modules,
+                                                 mocked_enable_mpath):
         CONF.set_override('disk_wait_delay', '5')
         mocked_root_dev.side_effect = errors.DeviceNotFound('boom')
 
-        self.hardware.evaluate_hardware_support()
+        self.hardware.initialize()
         mocked_sleep.assert_called_with(5)
 
-    def test_evaluate_hw_disks_timeout(
+    def test_initialize_disks_timeout(
             self, mocked_sleep, mocked_check_for_iscsi,
             mocked_md_assemble, mocked_get_inst_dev,
             mocked_load_ipmi_modules,
             mocked_enable_mpath):
         mocked_get_inst_dev.side_effect = errors.DeviceNotFound('boom')
-        result = self.hardware.evaluate_hardware_support()
-        self.assertEqual(hardware.HardwareSupport.GENERIC, result)
+        self.hardware.initialize()
         mocked_get_inst_dev.assert_called_with(mock.ANY)
         self.assertEqual(CONF.disk_wait_attempts,
                          mocked_get_inst_dev.call_count)
@@ -6259,7 +6310,7 @@ class TestCollectSystemLogs(base.IronicAgentTest):
     @mock.patch.object(hardware, '_collect_udev', autospec=True)
     def test_collect_system_logs(self, mock_udev, mock_execute):
         commands = set()
-        expected = {'df', 'dmesg', 'iptables', 'ip', 'lsblk',
+        expected = {'df', 'dmesg', 'efibootmgr', 'iptables', 'ip', 'lsblk',
                     'lshw', 'cat', 'mount', 'multipath', 'parted', 'ps'}
 
         def fake_execute(cmd, *args, **kwargs):
@@ -6926,6 +6977,60 @@ class TestListNetworkInterfaces(base.IronicAgentTest):
         self.assertEqual('eth0.101', interfaces[3].name)
         self.assertEqual('eth1.102', interfaces[4].name)
         self.assertEqual('eth1.103', interfaces[5].name)
+
+    @mock.patch.object(hardware.GenericHardwareManager, 'filter_device',
+                       autospec=True)
+    def test_list_network_interfaces_with_filter_device(
+            self, mock_filter_device, mock_has_carrier, mocked_execute,
+            mocked_open, mocked_exists, mocked_listdir, mocked_net_if_addrs,
+            mockedget_managers, mocked_lshw, mocked_get_mac_addr):
+        mocked_lshw.return_value = json.loads(hws.LSHW_JSON_OUTPUT_V2[0])
+        mocked_listdir.return_value = ['lo', 'eth0', 'eth1']
+        mocked_exists.side_effect = [False, False, True, True]
+        mocked_open.return_value.__enter__ = lambda s: s
+        mocked_open.return_value.__exit__ = mock.Mock()
+        read_mock = mocked_open.return_value.read
+        read_mock.side_effect = ['1']
+        mocked_net_if_addrs.return_value = {
+            'lo': [
+                FakeAddr(socket.AF_INET, '127.0.0.1'),
+                FakeAddr(socket.AF_INET6, '::1'),
+                FakeAddr(socket.AF_PACKET, '00:00:00:00:00:00')
+            ],
+            'eth0': [
+                FakeAddr(socket.AF_INET, '192.168.1.2'),
+                FakeAddr(socket.AF_INET6, 'fd00::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b1')
+            ],
+            'eth1': [
+                FakeAddr(socket.AF_INET, '192.168.2.2'),
+                FakeAddr(socket.AF_INET6, 'fd00:1000::101'),
+                FakeAddr(socket.AF_PACKET, '00:0c:29:8c:11:b2')
+            ]
+        }
+        mocked_get_mac_addr.side_effect = lambda iface: {
+            'lo': '00:00:00:00:00:00',
+            'eth0': '00:0c:29:8c:11:b1',
+            'eth1': '00:0c:29:8c:11:b2',
+        }.get(iface)
+        mocked_execute.return_value = ('em0\n', '')
+        mock_has_carrier.return_value = True
+
+        seen_devices = set()
+
+        def _filter(hwmgr, device):
+            self.assertIsInstance(device, hardware.NetworkInterface)
+            seen_devices.add(device.name)
+            if device.name == 'eth1':
+                return None
+            return device
+
+        mock_filter_device.side_effect = _filter
+
+        interfaces = self.hardware.list_network_interfaces()
+        self.assertEqual(1, len(interfaces))
+        self.assertEqual('eth0', interfaces[0].name)
+        self.assertEqual({'eth0', 'eth1'}, seen_devices)
 
 
 @mock.patch.object(hardware, 'dispatch_to_managers', autospec=True)
