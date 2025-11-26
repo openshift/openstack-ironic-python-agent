@@ -601,21 +601,27 @@ class IronicPythonAgent(base.ExecuteCommandMixin):
             # We can't try to inspect or heartbeat until we have valid
             # interfaces to perform those actions over.
             self._wait_for_interface()
+            # Keep the inspection error for future logging.
+            lookup_log_extra = ""
+            if not inspector.is_enabled():
+                lookup_log_extra = "Inspection is disabled via configuration"
 
             if self.api_urls or cfg.CONF.inspection_callback_url:
                 try:
-                    # Attempt inspection. This may fail, and previously
-                    # an error would be logged.
                     uuid = inspector.inspect()
                 except errors.InspectionError as e:
-                    LOG.error('Failed to perform inspection: %s', e)
+                    LOG.error('Failed to perform inspection: %s. '
+                              'Processing with lookup', e)
+                    lookup_log_extra = (
+                        "Inspection has previously failed: %s" % e)
 
             if self.api_urls:
                 content = self.api_client.lookup_node(
                     hardware_info=hardware.list_hardware_info(use_cache=True),
                     timeout=self.lookup_timeout,
                     starting_interval=self.lookup_interval,
-                    node_uuid=uuid)
+                    node_uuid=uuid,
+                    log_extra=lookup_log_extra)
                 LOG.debug('Received lookup results: %s', content)
                 self.process_lookup_data(content)
                 # Save the API url in case we need it later.

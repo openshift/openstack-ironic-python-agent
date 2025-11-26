@@ -58,18 +58,23 @@ def _get_collector_names():
     return [x.strip() for x in collectors.split(',') if x.strip()]
 
 
+def is_enabled():
+    return (CONF.inspection_callback_url
+            or (CONF.inspection_collectors and CONF.api_url))
+
+
 def inspect():
     """Optionally run inspection on the current node.
 
     If ``inspection_callback_url`` is set in the configuration, get
     the hardware inventory from the node and post it back to the inspector.
 
-    :return: node UUID if inspection was successful, None if associated node
-             was not found in inspector cache. None is also returned if
-             inspector support is not enabled.
+    :return: node UUID if inspection was successful, None if inspector support
+        is not enabled.
+    :raises: InspectionError on failures, including if the node is not found
+        and discovery is disabled.
     """
-    if (not CONF.inspection_callback_url
-            and not (CONF.inspection_collectors and CONF.api_url)):
+    if not is_enabled():
         LOG.info('Inspection is disabled, skipping')
         return
 
@@ -110,10 +115,6 @@ def inspect():
 
     # Now raise everything we were delaying
     failures.raise_if_needed()
-
-    if resp is None:
-        raise errors.InspectionError('stopping inspection, as inspector '
-                                     'returned an error')
 
     LOG.info('inspection finished successfully')
     return resp.get('uuid')
@@ -185,10 +186,8 @@ def call_inspector(data, failures):
 
     resp = _post_to_inspector()
     if resp.status_code >= 400:
-        LOG.error('inspector %s error %d: %s, proceeding with lookup',
-                  CONF.inspection_callback_url,
-                  resp.status_code, resp.content.decode('utf-8'))
-        return
+        msg = 'error %d: %s' % (resp.status_code, resp.content.decode('utf-8'))
+        raise errors.InspectionError(msg)
 
     return resp.json()
 
