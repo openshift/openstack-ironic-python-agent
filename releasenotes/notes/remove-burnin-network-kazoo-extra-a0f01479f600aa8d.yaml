@@ -1,0 +1,10 @@
+---
+upgrade:
+  - |
+    The ``burnin-network-kazoo`` extra has been removed. Use extras in
+    the tooz library instead. For example, to install the optional dependencies
+    required for the zookeeper driver, use the following command.
+
+    .. code-block:: console
+
+      $ pip install tooz[zookeeper]
