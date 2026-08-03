@@ -1,5 +1,5 @@
 # these are needed to compile Python dependencies from sources
-python3-all-dev [platform:dpkg !platform:ubuntu-precise test]
+python3-all-dev [platform:dpkg test]
 python3-devel [platform:rpm test]
 build-essential [platform:dpkg test]
 libssl-dev [platform:dpkg test]
