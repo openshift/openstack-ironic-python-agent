@@ -404,9 +404,9 @@ cli_opts = [
                      'cluster which may be visible over a storage fabric '
                      'such as FibreChannel.'),
     cfg.BoolOpt('md5_enabled',
-                default=True,
+                default=False,
                 help='If the MD5 algorithm is enabled for file checksums. '
-                     'Will be changed to False in the future.'),
+                     'This value is typically overridden by Ironic.'),
     cfg.IntOpt('http_request_timeout',
                default=APARAMS.get('ipa-http-request-timeout', 30),
                min=1,
