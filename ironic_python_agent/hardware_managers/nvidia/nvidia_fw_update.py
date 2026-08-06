@@ -40,6 +40,7 @@ ARRAY_PARAM_VALUE_REGEX = r'Array\[(?P<first_index>\d+)' \
                           r'\.\.(?P<last_index>\d+)\]'
 PSID_REGEX = r'PSID:\s*\t*(?P<psid>\w+)'
 NETWORK_DEVICE_REGEX = r'02\d\d'
+SUPPORTED_CHECKSUM_ALGORITHMS = ('sha256', 'sha512')
 LOG = log.getLogger(__name__)
 
 """
@@ -47,14 +48,14 @@ Example of Nvidia NIC Firmware images list:
 [
   {
     "url": "file:///firmware_images/fw1.bin",
-    "checksum": "a94e683ea16d9ae44768f0a65942234d",
-    "checksumType": "md5",
+    "checksum": "<sha256 hash of fw1.bin>",
+    "checksumType": "sha256",
     "componentFlavor": "MT_0000000540",
     "version": "24.34.1002"
   },
   {
     "url": "http://10.10.10.10/firmware_images/fw2.bin",
-    "checksum": "a94e683ea16d9ae44768f0a65942234c",
+    "checksum": "<sha512 hash of fw2.bin>",
     "checksumType": "sha512",
     "componentFlavor": "MT_0000000652",
     "version": "24.34.1002"
@@ -153,6 +154,10 @@ class UnSupportedConfigByFW(RESTError):
 
 class InvalidURLScheme(RESTError):
     _msg_fmt = 'Invalid URL Scheme: %(error_msg)s'
+
+
+class InvalidChecksumAlgorithm(RESTError):
+    _msg_fmt = 'Invalid checksum algorithm: %(error_msg)s'
 
 
 class NvidiaNicFirmwareOps(object):
@@ -375,9 +380,9 @@ class NvidiaNicFirmwareBinary(object):
         self.version = version
         self.image_info = {}
         self._process_url()
+        self._validate_image_checksum()
         self._validate_image_psid()
         self._validate_image_firmware_version()
-        self._validate_image_checksum()
 
     def __del__(self):
         self._cleanup_file()
@@ -508,8 +513,33 @@ class NvidiaNicFirmwareBinary(object):
         """Validate the provided checksum with the calculated one of the
 
         provided firmware image
+        :raises:    InvalidChecksumAlgorithm if algorithm is not
+                    supported
         :raises:    MismatchChecksumError if they are not equal
         """
+        if self.checksum_type not in SUPPORTED_CHECKSUM_ALGORITHMS:
+            if self.checksum_type == 'md5':
+                if not CONF.md5_enabled:
+                    err = (
+                        'MD5 checksum algorithm is '
+                        'disabled. Please use sha256 '
+                        'or sha512.')
+                    raise InvalidChecksumAlgorithm(
+                        details=err)
+                LOG.warning(
+                    'Use of MD5 checksum is deprecated '
+                    'for firmware image validation. '
+                    'Please use sha256 or sha512.')
+            else:
+                err = (
+                    'Checksum algorithm %s is not '
+                    'supported. Supported algorithms '
+                    'are: %s'
+                    % (self.checksum_type,
+                       ', '.join(
+                           SUPPORTED_CHECKSUM_ALGORITHMS)))
+                raise InvalidChecksumAlgorithm(
+                    details=err)
         calculated_checksum = fileutils.compute_file_checksum(
             self.dest_file_path, algorithm=self.checksum_type)
         if self.checksum != calculated_checksum:
@@ -532,7 +562,8 @@ class NvidiaFirmwareImages(object):
     def validate_images_schema(self):
         """Validate the provided firmware images list schema
 
-        :raises:    InvalidFirmwareImageConfig if any param is missing
+        :raises:    InvalidFirmwareImageConfig if any param is
+                    missing or checksumType is not supported
         """
         for image in self.firmware_images:
             if not (image.get('url')
@@ -540,12 +571,32 @@ class NvidiaFirmwareImages(object):
                     and image.get('checksumType')
                     and image.get('componentFlavor')
                     and image.get('version')):
-                err = 'Invalid parameters for image %s,' \
-                      'please provide the following parameters ' \
-                      'url, checksum, checksumType, componentFlavor, ' \
-                      'version' % image
+                err = ('Invalid parameters for image %s,'
+                       'please provide the following '
+                       'parameters url, checksum, '
+                       'checksumType, componentFlavor, '
+                       'version' % image)
                 LOG.error(err)
-                raise InvalidFirmwareImageConfig(details=err)
+                raise InvalidFirmwareImageConfig(
+                    details=err)
+            checksum_type = image.get('checksumType')
+            if checksum_type not in (
+                    SUPPORTED_CHECKSUM_ALGORITHMS):
+                if (checksum_type != 'md5'
+                        or not CONF.md5_enabled):
+                    err = (
+                        'Checksum algorithm %s is not '
+                        'supported for image %s. '
+                        'Supported algorithms are: '
+                        '%s' % (
+                            checksum_type,
+                            image.get('url'),
+                            ', '.join(
+                                SUPPORTED_CHECKSUM_ALGORITHMS
+                            )))
+                    LOG.error(err)
+                    raise InvalidFirmwareImageConfig(
+                        details=err)
 
     def filter_images(self, psids_list):
         """Filter firmware images according to the system nics PSIDs,

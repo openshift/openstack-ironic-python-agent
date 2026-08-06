@@ -1,0 +1,9 @@
+---
+security:
+  - |
+    The Nvidia NIC firmware update steps now enforce checksum algorithm
+    validation. Only sha256 and sha512 are accepted. md5 is permitted
+    only when the ``[DEFAULT]md5_enabled`` option is set to True, and
+    weak algorithms such as sha1 are rejected outright. Additionally,
+    firmware image checksum verification now occurs before the image
+    is passed to mstflint for parsing.
