@@ -7,14 +7,6 @@ repos:
     rev: v4.5.0
     hooks:
       - id: trailing-whitespace
-        # NOTE(cardoe): release notes aren't modifed after their release
-        exclude: |
-          (?x)(
-          ^releasenotes/notes/check-if-ESP-is-mounted-f9e0eff3609c2668.yaml$|
-          ^releasenotes/notes/fix-high-cpu-usage-eventlet-1dccf3b81dd42c47.yaml$|
-          ^releasenotes/notes/image-security-5c23b890409101c9.yaml$|
-          ^releasenotes/notes/software-raid-use-label-as-rootfs-uuid-d9a3827180f1a238.yaml$|
-          )
       - id: mixed-line-ending
         args: ['--fix', 'lf']
         exclude: |
