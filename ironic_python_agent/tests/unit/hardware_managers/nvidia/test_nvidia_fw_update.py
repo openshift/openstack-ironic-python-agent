@@ -613,7 +613,6 @@ PSID:                  MT_0000000228
     def test_nvidia_nic_firmware_binray_md5_rejected(
             self, mocked_mkdtemp, open_mock,
             mocked_url_open):
-        self.config(md5_enabled=False)
         mocked_mkdtemp.return_value = '/tmp/nvidia_firmware123/'
         a = mock.Mock()
         a.read.return_value = 'dummy data'
@@ -695,7 +694,6 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
             nvidia_fw_images.validate_images_schema)
 
     def test_validate_images_schema_md5_rejected(self):
-        self.config(md5_enabled=False)
         firmware_images = [
             {
                 "url": "file:///firmware_images/fw1.bin",
@@ -712,6 +710,7 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
             nvidia_fw_images.validate_images_schema)
 
     def test_validate_images_schema_md5_accepted(self):
+        self.config(md5_enabled=True)
         firmware_images = [
             {
                 "url": "file:///firmware_images/fw1.bin",
