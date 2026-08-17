@@ -1,0 +1,6 @@
+---
+upgrade:
+  - |
+    The ``[DEFAULT]md5_enabled`` option now defaults to ``False``.
+    This value is typically overridden by Ironic via the agent
+    heartbeat configuration.

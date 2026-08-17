@@ -133,7 +133,7 @@ class MellanoxDeviceHardwareManager(hardware.HardwareManager):
                                         'url: to firmware image (file://, '
                                         'http://), '
                                         'checksum: of the provided image, '
-                                        'checksumType: md5/sha512/sha256, '
+                                        'checksumType: sha256/sha512, '
                                         'componentProfile: PSID of the nic, '
                                         'version: of the FW',
                          'required': True,

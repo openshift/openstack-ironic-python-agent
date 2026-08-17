@@ -2574,6 +2574,7 @@ class TestImageDownload(base.IronicAgentTest):
     @mock.patch.object(standby.LOG, 'warning', autospec=True)
     def test_download_image_and_checksum_warning_on_mismatch(
             self, warn_mock, session_mock, hash_mock):
+        CONF.set_override('md5_enabled', True)
         content = ['SpongeBob', 'SquarePants']
         fake_cs = "019fe036425da1c562f2e9f5299820bf"
         cs_response = mock.Mock()
