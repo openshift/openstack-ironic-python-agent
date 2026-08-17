@@ -489,9 +489,12 @@ PSID:                  MT_0000000228
     @mock.patch.object(nvidia_fw_update.request, 'urlopen', autospec=True)
     @mock.patch.object(builtins, 'open', autospec=True)
     @mock.patch.object(utils, 'execute', autospec=True)
+    @mock.patch.object(fileutils, 'compute_file_checksum',
+                       autospec=True)
     @mock.patch.object(tempfile, 'mkdtemp', autospec=True)
     def test_nvidia_nic_firmware_binray_mismatch_component_flavor(
-            self, mocked_mkdtemp, mocked_execute, open_mock, mocked_url_open):
+            self, mocked_mkdtemp, mocked_compute_file_checksum,
+            mocked_execute, open_mock, mocked_url_open):
         mocked_mkdtemp.return_value = '/tmp/nvidia_firmware123/'
         a = mock.Mock()
         a.read.return_value = 'dummy data'
@@ -500,6 +503,8 @@ PSID:                  MT_0000000228
     FW Version:            20.35.1012
     PSID:                  MT_0000000228
     """, '')
+        mocked_compute_file_checksum.return_value = \
+            'a94e683ea16d9ae44768f0a65942234c'
         fd_mock = mock.MagicMock(spec=io.BytesIO)
         open_mock.return_value = fd_mock
         self.assertRaises(nvidia_fw_update.MismatchComponentFlavor,
@@ -509,6 +514,7 @@ PSID:                  MT_0000000228
                           'sha512',
                           'MT_0000000227',
                           '20.35.1012')
+        mocked_compute_file_checksum.assert_called_once()
         mocked_execute.assert_called_once()
         open_mock.assert_called_once()
         mocked_url_open.assert_called_once()
@@ -517,37 +523,10 @@ PSID:                  MT_0000000228
     @mock.patch.object(nvidia_fw_update.request, 'urlopen', autospec=True)
     @mock.patch.object(builtins, 'open', autospec=True)
     @mock.patch.object(utils, 'execute', autospec=True)
+    @mock.patch.object(fileutils, 'compute_file_checksum',
+                       autospec=True)
     @mock.patch.object(tempfile, 'mkdtemp', autospec=True)
     def test_nvidia_nic_firmware_binray_mismatch_fw_version(
-            self, mocked_mkdtemp, mocked_execute, open_mock, mocked_url_open):
-        mocked_mkdtemp.return_value = '/tmp/nvidia_firmware123/'
-        a = mock.Mock()
-        a.read.return_value = 'dummy data'
-        mocked_url_open.return_value = a
-        mocked_execute.return_value = ("""Image type:            FS4
-        FW Version:            20.35.1012
-        PSID:                  MT_0000000228
-        """, '')
-        fd_mock = mock.MagicMock(spec=io.BytesIO)
-        open_mock.return_value = fd_mock
-        self.assertRaises(nvidia_fw_update.MismatchFWVersion,
-                          nvidia_fw_update.NvidiaNicFirmwareBinary,
-                          'http://10.10.10.10/firmware_images/fw1.bin',
-                          'a94e683ea16d9ae44768f0a65942234c',
-                          'sha512',
-                          'MT_0000000228',
-                          '20.34.1012')
-        mocked_execute.assert_called_once()
-        open_mock.assert_called_once()
-        mocked_url_open.assert_called_once()
-        mocked_mkdtemp.assert_called_once()
-
-    @mock.patch.object(nvidia_fw_update.request, 'urlopen', autospec=True)
-    @mock.patch.object(builtins, 'open', autospec=True)
-    @mock.patch.object(utils, 'execute', autospec=True)
-    @mock.patch.object(fileutils, 'compute_file_checksum', autospec=True)
-    @mock.patch.object(tempfile, 'mkdtemp', autospec=True)
-    def test_nvidia_nic_firmware_binray_mismatch_checksum(
             self, mocked_mkdtemp, mocked_compute_file_checksum,
             mocked_execute, open_mock, mocked_url_open):
         mocked_mkdtemp.return_value = '/tmp/nvidia_firmware123/'
@@ -562,6 +541,36 @@ PSID:                  MT_0000000228
             'a94e683ea16d9ae44768f0a65942234c'
         fd_mock = mock.MagicMock(spec=io.BytesIO)
         open_mock.return_value = fd_mock
+        self.assertRaises(nvidia_fw_update.MismatchFWVersion,
+                          nvidia_fw_update.NvidiaNicFirmwareBinary,
+                          'http://10.10.10.10/firmware_images/fw1.bin',
+                          'a94e683ea16d9ae44768f0a65942234c',
+                          'sha512',
+                          'MT_0000000228',
+                          '20.34.1012')
+        mocked_compute_file_checksum.assert_called_once()
+        mocked_execute.assert_called_once()
+        open_mock.assert_called_once()
+        mocked_url_open.assert_called_once()
+        mocked_mkdtemp.assert_called_once()
+
+    @mock.patch.object(nvidia_fw_update.request, 'urlopen', autospec=True)
+    @mock.patch.object(builtins, 'open', autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    @mock.patch.object(fileutils, 'compute_file_checksum',
+                       autospec=True)
+    @mock.patch.object(tempfile, 'mkdtemp', autospec=True)
+    def test_nvidia_nic_firmware_binray_mismatch_checksum(
+            self, mocked_mkdtemp, mocked_compute_file_checksum,
+            mocked_execute, open_mock, mocked_url_open):
+        mocked_mkdtemp.return_value = '/tmp/nvidia_firmware123/'
+        a = mock.Mock()
+        a.read.return_value = 'dummy data'
+        mocked_url_open.return_value = a
+        mocked_compute_file_checksum.return_value = \
+            'a94e683ea16d9ae44768f0a65942234c'
+        fd_mock = mock.MagicMock(spec=io.BytesIO)
+        open_mock.return_value = fd_mock
         self.assertRaises(nvidia_fw_update.MismatchChecksumError,
                           nvidia_fw_update.NvidiaNicFirmwareBinary,
                           'http://10.10.10.10/firmware_images/fw1.bin',
@@ -569,11 +578,55 @@ PSID:                  MT_0000000228
                           'sha512',
                           'MT_0000000228',
                           '20.35.1012')
-        mocked_execute.assert_called_once()
+        mocked_execute.assert_not_called()
         mocked_compute_file_checksum.assert_called_once()
         open_mock.assert_called_once()
         mocked_url_open.assert_called_once()
         mocked_mkdtemp.assert_called_once()
+
+    @mock.patch.object(nvidia_fw_update.request, 'urlopen',
+                       autospec=True)
+    @mock.patch.object(builtins, 'open', autospec=True)
+    @mock.patch.object(tempfile, 'mkdtemp', autospec=True)
+    def test_nvidia_nic_firmware_binray_unsupported_checksum(
+            self, mocked_mkdtemp, open_mock,
+            mocked_url_open):
+        mocked_mkdtemp.return_value = '/tmp/nvidia_firmware123/'
+        a = mock.Mock()
+        a.read.return_value = 'dummy data'
+        mocked_url_open.return_value = a
+        fd_mock = mock.MagicMock(spec=io.BytesIO)
+        open_mock.return_value = fd_mock
+        self.assertRaises(
+            nvidia_fw_update.InvalidChecksumAlgorithm,
+            nvidia_fw_update.NvidiaNicFirmwareBinary,
+            'http://10.10.10.10/firmware_images/fw1.bin',
+            'a94e683ea16d9ae44768f0a65942234c',
+            'sha1',
+            'MT_0000000228',
+            '20.35.1012')
+
+    @mock.patch.object(nvidia_fw_update.request, 'urlopen',
+                       autospec=True)
+    @mock.patch.object(builtins, 'open', autospec=True)
+    @mock.patch.object(tempfile, 'mkdtemp', autospec=True)
+    def test_nvidia_nic_firmware_binray_md5_rejected(
+            self, mocked_mkdtemp, open_mock,
+            mocked_url_open):
+        mocked_mkdtemp.return_value = '/tmp/nvidia_firmware123/'
+        a = mock.Mock()
+        a.read.return_value = 'dummy data'
+        mocked_url_open.return_value = a
+        fd_mock = mock.MagicMock(spec=io.BytesIO)
+        open_mock.return_value = fd_mock
+        self.assertRaises(
+            nvidia_fw_update.InvalidChecksumAlgorithm,
+            nvidia_fw_update.NvidiaNicFirmwareBinary,
+            'http://10.10.10.10/firmware_images/fw1.bin',
+            'a94e683ea16d9ae44768f0a65942234c',
+            'md5',
+            'MT_0000000228',
+            '20.35.1012')
 
 
 class TestNvidiaFirmwareImages(base.IronicAgentTest):
@@ -584,14 +637,14 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
         firmware_images = [
             {
                 "url": "file:///firmware_images/fw1.bin",
-                "checksum": "a94e683ea16d9ae44768f0a65942234d",
-                "checksumType": "md5",
+                "checksum": "abcd1234" * 8,
+                "checksumType": "sha256",
                 "componentFlavor": "MT_0000000540",
                 "version": "24.34.1002"
             },
             {
                 "url": "http://10.10.10.10/firmware_images/fw2.bin",
-                "checksum": "a94e683ea16d9ae44768f0a65942234c",
+                "checksum": "abcd1234" * 16,
                 "checksumType": "sha512",
                 "componentFlavor": "MT_0000000652",
                 "version": "24.34.1002"
@@ -605,14 +658,14 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
         firmware_images = [
             {
                 "url": "file:///firmware_images/fw1.bin",
-                "checksum": "a94e683ea16d9ae44768f0a65942234d",
-                "checksumType": "md5",
+                "checksum": "abcd1234" * 8,
+                "checksumType": "sha256",
                 "componentFlavor": "MT_0000000540",
                 "version": "24.34.1002"
             },
             {
                 "url": "http://10.10.10.10/firmware_images/fw2.bin",
-                "checksum": "a94e683ea16d9ae44768f0a65942234c",
+                "checksum": "abcd1234" * 16,
                 "checksumType": "sha512",
                 "component": "MT_0000000652",
                 "version": "24.34.1002"
@@ -620,10 +673,27 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
         ]
         nvidia_fw_images = nvidia_fw_update.NvidiaFirmwareImages(
             firmware_images)
-        self.assertRaises(nvidia_fw_update.InvalidFirmwareImageConfig,
-                          nvidia_fw_images.validate_images_schema)
+        self.assertRaises(
+            nvidia_fw_update.InvalidFirmwareImageConfig,
+            nvidia_fw_images.validate_images_schema)
 
-    def test_filter_images(self):
+    def test_validate_images_schema_unsupported_checksum(self):
+        firmware_images = [
+            {
+                "url": "file:///firmware_images/fw1.bin",
+                "checksum": "abcd1234" * 8,
+                "checksumType": "sha1",
+                "componentFlavor": "MT_0000000540",
+                "version": "24.34.1002"
+            }
+        ]
+        nvidia_fw_images = nvidia_fw_update.NvidiaFirmwareImages(
+            firmware_images)
+        self.assertRaises(
+            nvidia_fw_update.InvalidFirmwareImageConfig,
+            nvidia_fw_images.validate_images_schema)
+
+    def test_validate_images_schema_md5_rejected(self):
         firmware_images = [
             {
                 "url": "file:///firmware_images/fw1.bin",
@@ -631,10 +701,41 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
                 "checksumType": "md5",
                 "componentFlavor": "MT_0000000540",
                 "version": "24.34.1002"
+            }
+        ]
+        nvidia_fw_images = nvidia_fw_update.NvidiaFirmwareImages(
+            firmware_images)
+        self.assertRaises(
+            nvidia_fw_update.InvalidFirmwareImageConfig,
+            nvidia_fw_images.validate_images_schema)
+
+    def test_validate_images_schema_md5_accepted(self):
+        self.config(md5_enabled=True)
+        firmware_images = [
+            {
+                "url": "file:///firmware_images/fw1.bin",
+                "checksum": "a94e683ea16d9ae44768f0a65942234d",
+                "checksumType": "md5",
+                "componentFlavor": "MT_0000000540",
+                "version": "24.34.1002"
+            }
+        ]
+        nvidia_fw_images = nvidia_fw_update.NvidiaFirmwareImages(
+            firmware_images)
+        nvidia_fw_images.validate_images_schema()
+
+    def test_filter_images(self):
+        firmware_images = [
+            {
+                "url": "file:///firmware_images/fw1.bin",
+                "checksum": "abcd1234" * 8,
+                "checksumType": "sha256",
+                "componentFlavor": "MT_0000000540",
+                "version": "24.34.1002"
             },
             {
                 "url": "http://10.10.10.10/firmware_images/fw2.bin",
-                "checksum": "a94e683ea16d9ae44768f0a65942234c",
+                "checksum": "abcd1234" * 16,
                 "checksumType": "sha512",
                 "componentFlavor": "MT_0000000652",
                 "version": "24.34.1002"
@@ -646,8 +747,8 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
         nvidia_fw_images.validate_images_schema()
         expected_images_psid_dict = {"MT_0000000540": {
             "url": "file:///firmware_images/fw1.bin",
-            "checksum": "a94e683ea16d9ae44768f0a65942234d",
-            "checksumType": "md5",
+            "checksum": "abcd1234" * 8,
+            "checksumType": "sha256",
             "componentFlavor": "MT_0000000540",
             "version": "24.34.1002"
         }}
@@ -659,14 +760,14 @@ class TestNvidiaFirmwareImages(base.IronicAgentTest):
         firmware_images = [
             {
                 "url": "file:///firmware_images/fw1.bin",
-                "checksum": "a94e683ea16d9ae44768f0a65942234d",
-                "checksumType": "md5",
+                "checksum": "abcd1234" * 8,
+                "checksumType": "sha256",
                 "componentFlavor": "MT_0000000540",
                 "version": "24.34.1002"
             },
             {
                 "url": "http://10.10.10.10/firmware_images/fw2.bin",
-                "checksum": "a94e683ea16d9ae44768f0a65942234c",
+                "checksum": "abcd1234" * 16,
                 "checksumType": "sha512",
                 "componentFlavor": "MT_0000000540",
                 "version": "24.35.1002"
