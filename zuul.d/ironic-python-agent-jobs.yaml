@@ -96,6 +96,7 @@
     vars:
       devstack_localrc:
         IRONIC_BUILD_DEPLOY_RAMDISK: True
+        IRONIC_DEFAULT_DEPLOY_INTERFACE: "direct"
         # NOTE(dtantsur): the ansible deploy doesn't depend on IPA code,
         # excluding it from the enabled list to save gate time.
         IRONIC_ENABLED_DEPLOY_INTERFACES: "direct"
