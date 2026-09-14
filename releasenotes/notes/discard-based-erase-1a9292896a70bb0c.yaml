@@ -1,0 +1,24 @@
+---
+features:
+  - |
+    ``erase_devices`` can now erase a block device by discarding it when no
+    secure erase path is available, before falling back to ``shred``. Some
+    platform firmware issues both ``SECURITY FREEZE LOCK`` and
+    ``SANITIZE FREEZE LOCK`` to attached SATA devices during POST, which
+    leaves no working ATA erase path for the lifetime of that boot. Discard
+    is unaffected by either freeze, and on a large SSD it completes in
+    seconds rather than the hours ``shred`` needs.
+
+    The path is opt in and off by default. Enable it with the new
+    ``[DEFAULT] enable_discard_erase`` option, with the kernel command line
+    parameter ``ipa-enable-discard-erase=true``, or per node by having
+    ironic send ``agent_enable_discard_erase`` in ``driver_internal_info``.
+
+    A device is only reported as erased when the result was verified. A
+    recognisable pattern is written to sampled positions before the discard
+    and has to read back as zeroes afterwards, so a device which silently
+    ignores the discard, or which was already zeroed, is not mistaken for an
+    erased one. A secure discard is attempted before a plain one. That
+    verification is a sample rather than a full read of the device, which is
+    why the option defaults to off: a discarded device is not a substitute
+    for a secure erase where the stronger guarantee is required.

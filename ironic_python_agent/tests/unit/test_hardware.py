@@ -3075,6 +3075,453 @@ class TestGenericHardwareManager(base.IronicAgentTest):
         self.hardware.erase_block_device(self.node, block_device)
         self.assertTrue(mock_shred.called)
 
+    @mock.patch.object(hardware.GenericHardwareManager, '_verify_discarded',
+                       autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_virtual_media_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_read_only_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_linux_raid_member', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_shred_block_device',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_erase_block_device_ata_frozen_discarded(
+            self, mocked_execute, mock_shred, mocked_raid_member,
+            mocked_ro_device, mocked_vm_member, mock_max_bytes, mock_markers,
+            mock_verify):
+        # A device the firmware froze out of both ATA erase paths is erased
+        # by discarding it once the operator has enabled that path, and
+        # shred is never reached even though the fallback to shred is not
+        # enabled on this node.
+        self.config(enable_discard_erase=True)
+        hdparm_output = create_hdparm_info(
+            supported=True, enabled=False, frozen=True, enhanced_erase=False)
+        mocked_execute.side_effect = [
+            (hdparm_output, ''),
+            (hws.SMARTCTL_NORMAL_OUTPUT, ''),
+            ('', ''),
+            ('', ''),
+        ]
+        mocked_raid_member.return_value = False
+        mocked_ro_device.return_value = False
+        mocked_vm_member.return_value = False
+        mock_max_bytes.return_value = 2199023255040
+        mock_markers.return_value = True
+        mock_verify.return_value = True
+
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        self.hardware.erase_block_device(self.node, block_device)
+
+        self.assertFalse(mock_shred.called)
+        mocked_execute.assert_has_calls([
+            mock.call('blkdiscard', '--secure', '/dev/sda'),
+            mock.call('blockdev', '--flushbufs', '/dev/sda'),
+        ])
+
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_discard_erase', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_virtual_media_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_read_only_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_linux_raid_member', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_shred_block_device',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_erase_block_device_discard_disabled_by_default(
+            self, mocked_execute, mock_shred, mocked_raid_member,
+            mocked_ro_device, mocked_vm_member, mock_discard):
+        # Without the option the device is never discarded, so a frozen
+        # device fails the clean step exactly as it did before.
+        hdparm_output = create_hdparm_info(
+            supported=True, enabled=False, frozen=True, enhanced_erase=False)
+        mocked_execute.side_effect = [
+            (hdparm_output, ''),
+            (hws.SMARTCTL_NORMAL_OUTPUT, ''),
+        ]
+        mocked_raid_member.return_value = False
+        mocked_ro_device.return_value = False
+        mocked_vm_member.return_value = False
+
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        self.assertRaises(
+            errors.IncompatibleHardwareMethodError,
+            self.hardware.erase_block_device,
+            self.node,
+            block_device)
+        self.assertFalse(mock_discard.called)
+        self.assertFalse(mock_shred.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_discard_erase', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_virtual_media_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_read_only_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_linux_raid_member', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_shred_block_device',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_erase_block_device_discard_enabled_by_ironic(
+            self, mocked_execute, mock_shred, mocked_raid_member,
+            mocked_ro_device, mocked_vm_member, mock_discard):
+        # Ironic may enable the path per node, which overrides the option.
+        info = self.node['driver_internal_info']
+        info['agent_enable_discard_erase'] = True
+        hdparm_output = create_hdparm_info(
+            supported=True, enabled=False, frozen=True, enhanced_erase=False)
+        mocked_execute.side_effect = [
+            (hdparm_output, ''),
+            (hws.SMARTCTL_NORMAL_OUTPUT, ''),
+        ]
+        mocked_raid_member.return_value = False
+        mocked_ro_device.return_value = False
+        mocked_vm_member.return_value = False
+        mock_discard.return_value = True
+
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        self.hardware.erase_block_device(self.node, block_device)
+
+        self.assertTrue(mock_discard.called)
+        self.assertFalse(mock_shred.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_discard_erase', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_virtual_media_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_read_only_device', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_is_linux_raid_member', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_shred_block_device',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_erase_block_device_discard_disabled_by_ironic(
+            self, mocked_execute, mock_shred, mocked_raid_member,
+            mocked_ro_device, mocked_vm_member, mock_discard):
+        # And it may disable it again on a node whose ramdisk enables it.
+        self.config(enable_discard_erase=True)
+        info = self.node['driver_internal_info']
+        info['agent_enable_discard_erase'] = False
+        info['agent_continue_if_secure_erase_failed'] = True
+        hdparm_output = create_hdparm_info(
+            supported=True, enabled=False, frozen=True, enhanced_erase=False)
+        mocked_execute.side_effect = [
+            (hdparm_output, ''),
+            (hws.SMARTCTL_NORMAL_OUTPUT, ''),
+        ]
+        mocked_raid_member.return_value = False
+        mocked_ro_device.return_value = False
+        mocked_vm_member.return_value = False
+        mock_shred.return_value = True
+
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        self.hardware.erase_block_device(self.node, block_device)
+
+        self.assertFalse(mock_discard.called)
+        self.assertTrue(mock_shred.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager, '_verify_discarded',
+                       autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase(self, mocked_execute, mock_max_bytes, mock_markers,
+                           mock_verify):
+        mock_max_bytes.return_value = 2199023255040
+        mock_markers.return_value = True
+        mock_verify.return_value = True
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        self.assertTrue(self.hardware._discard_erase(block_device))
+        # The markers have to be written before anything is discarded,
+        # otherwise the verification proves nothing.
+        self.assertTrue(mock_markers.called)
+        mocked_execute.assert_has_calls([
+            mock.call('blkdiscard', '--secure', '/dev/sda'),
+            mock.call('blockdev', '--flushbufs', '/dev/sda'),
+        ])
+
+    @mock.patch.object(hardware.GenericHardwareManager, '_verify_discarded',
+                       autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase_plain_fallback(self, mocked_execute,
+                                          mock_max_bytes, mock_markers,
+                                          mock_verify):
+        # A device without secure discard support still gets a plain one.
+        mock_max_bytes.return_value = 2199023255040
+        mock_markers.return_value = True
+        mock_verify.return_value = True
+        mocked_execute.side_effect = [
+            processutils.ProcessExecutionError,
+            ('', ''),
+            ('', ''),
+        ]
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        self.assertTrue(self.hardware._discard_erase(block_device))
+        mocked_execute.assert_has_calls([
+            mock.call('blkdiscard', '--secure', '/dev/sda'),
+            mock.call('blkdiscard', '/dev/sda'),
+            mock.call('blockdev', '--flushbufs', '/dev/sda'),
+        ])
+
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase_unsupported(self, mocked_execute, mock_max_bytes,
+                                       mock_markers):
+        mock_max_bytes.return_value = 0
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        self.assertFalse(self.hardware._discard_erase(block_device))
+        # Nothing is written to a device which is not going to be discarded.
+        self.assertFalse(mock_markers.called)
+        self.assertFalse(mocked_execute.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase_device_too_small(self, mocked_execute,
+                                            mock_max_bytes, mock_markers):
+        mock_max_bytes.return_value = 2199023255040
+        block_device = hardware.BlockDevice(
+            '/dev/sda', 'small', hardware.DISCARD_VERIFY_SAMPLE_SIZE, False)
+
+        self.assertFalse(self.hardware._discard_erase(block_device))
+        self.assertFalse(mock_markers.called)
+        self.assertFalse(mocked_execute.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase_markers_failed(self, mocked_execute,
+                                          mock_max_bytes, mock_markers):
+        mock_max_bytes.return_value = 2199023255040
+        mock_markers.return_value = False
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        self.assertFalse(self.hardware._discard_erase(block_device))
+        self.assertFalse(mocked_execute.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager, '_verify_discarded',
+                       autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase_both_variants_failed(self, mocked_execute,
+                                                mock_max_bytes, mock_markers,
+                                                mock_verify):
+        mock_max_bytes.return_value = 2199023255040
+        mock_markers.return_value = True
+        mocked_execute.side_effect = processutils.ProcessExecutionError
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        self.assertFalse(self.hardware._discard_erase(block_device))
+        # A device which could not be discarded is never reported as erased,
+        # so verification is not even attempted.
+        self.assertFalse(mock_verify.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager, '_verify_discarded',
+                       autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase_flush_failed(self, mocked_execute, mock_max_bytes,
+                                        mock_markers, mock_verify):
+        # Without an invalidated buffer cache the read back is meaningless,
+        # so the device is not reported as erased.
+        mock_max_bytes.return_value = 2199023255040
+        mock_markers.return_value = True
+        mocked_execute.side_effect = [
+            ('', ''),
+            processutils.ProcessExecutionError,
+        ]
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        self.assertFalse(self.hardware._discard_erase(block_device))
+        self.assertFalse(mock_verify.called)
+
+    @mock.patch.object(hardware.GenericHardwareManager, '_verify_discarded',
+                       autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager,
+                       '_write_discard_markers', autospec=True)
+    @mock.patch.object(hardware.GenericHardwareManager, '_discard_max_bytes',
+                       autospec=True)
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_discard_erase_not_verified(self, mocked_execute, mock_max_bytes,
+                                        mock_markers, mock_verify):
+        mock_max_bytes.return_value = 2199023255040
+        mock_markers.return_value = True
+        mock_verify.return_value = False
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        self.assertFalse(self.hardware._discard_erase(block_device))
+
+    def test_discard_max_bytes(self):
+        fileobj = mock.mock_open(read_data='2199023255040\n')
+        block_device = hardware.BlockDevice('/dev/sda', 'big', 1, False)
+        with mock.patch(
+                'builtins.open', fileobj, create=True) as mocked_open:
+            self.assertEqual(
+                2199023255040, self.hardware._discard_max_bytes(block_device))
+            mocked_open.assert_called_once_with(
+                '/sys/block/sda/queue/discard_max_bytes', 'r')
+
+    def test_discard_max_bytes_unavailable(self):
+        block_device = hardware.BlockDevice('/dev/sda', 'big', 1, False)
+        opener = mock.MagicMock(side_effect=OSError)
+        with mock.patch('builtins.open', opener, create=True):
+            self.assertEqual(
+                0, self.hardware._discard_max_bytes(block_device))
+
+    def test_discard_sample_offsets(self):
+        size = 7681501126656
+        block_device = hardware.BlockDevice('/dev/sda', 'big', size, False,
+                                            logical_sectors=512)
+
+        offsets = self.hardware._discard_sample_offsets(block_device)
+
+        # Each fraction has to produce an offset of its own. Deriving them
+        # from the full size and clamping instead collapses several
+        # fractions onto the same position, silently taking fewer samples
+        # than the number of fractions suggests.
+        self.assertEqual(len(hardware.DISCARD_VERIFY_OFFSETS), len(offsets))
+        self.assertEqual(sorted(set(offsets)), offsets)
+        for offset in offsets:
+            self.assertEqual(0, offset % 512)
+            self.assertLessEqual(0, offset)
+            self.assertLessEqual(
+                offset, size - hardware.DISCARD_VERIFY_SAMPLE_SIZE)
+
+    def test_discard_sample_offsets_alignment_fallback(self):
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        offsets = self.hardware._discard_sample_offsets(block_device)
+
+        self.assertEqual(len(hardware.DISCARD_VERIFY_OFFSETS), len(offsets))
+        for offset in offsets:
+            self.assertEqual(
+                0, offset % hardware.DISCARD_VERIFY_DEFAULT_ALIGNMENT)
+
+    def test_discard_sample_offsets_device_too_small(self):
+        block_device = hardware.BlockDevice(
+            '/dev/sda', 'small', hardware.DISCARD_VERIFY_SAMPLE_SIZE, False)
+
+        self.assertEqual(
+            [], self.hardware._discard_sample_offsets(block_device))
+
+    @staticmethod
+    def _mock_device_file(payload=b''):
+        """Return an open() replacement and the handle it hands out."""
+        handle = mock.MagicMock()
+        handle.read.return_value = payload
+        opener = mock.MagicMock()
+        opener.return_value.__enter__.return_value = handle
+        return opener, handle
+
+    def test_write_discard_markers(self):
+        opener, handle = self._mock_device_file()
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        offsets = [0, 4096]
+
+        with mock.patch('builtins.open', opener, create=True):
+            with mock.patch.object(os, 'fsync', autospec=True) as mock_fsync:
+                self.assertTrue(self.hardware._write_discard_markers(
+                    block_device, offsets))
+
+        # Opened for update, so the device is not truncated.
+        opener.assert_called_once_with('/dev/sda', 'r+b')
+        self.assertEqual(
+            offsets, [call.args[0] for call in handle.seek.call_args_list])
+        self.assertEqual(len(offsets), handle.write.call_count)
+        written = handle.write.call_args_list[0].args[0]
+        self.assertEqual(hardware.DISCARD_VERIFY_SAMPLE_SIZE, len(written))
+        self.assertTrue(any(written))
+        # The markers are useless unless they reached the device.
+        self.assertTrue(mock_fsync.called)
+
+    def test_write_discard_markers_unwritable(self):
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        opener = mock.MagicMock(side_effect=OSError)
+
+        with mock.patch('builtins.open', opener, create=True):
+            self.assertFalse(self.hardware._write_discard_markers(
+                block_device, [0]))
+
+    def test_verify_discarded(self):
+        opener, handle = self._mock_device_file(
+            bytes(hardware.DISCARD_VERIFY_SAMPLE_SIZE))
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        offsets = [0, 4096, 8192]
+
+        with mock.patch('builtins.open', opener, create=True):
+            self.assertTrue(
+                self.hardware._verify_discarded(block_device, offsets))
+
+        self.assertEqual(
+            offsets, [call.args[0] for call in handle.seek.call_args_list])
+
+    def test_verify_discarded_data_left_behind(self):
+        opener, handle = self._mock_device_file(
+            hardware.DISCARD_VERIFY_MARKER * 512)
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+
+        with mock.patch('builtins.open', opener, create=True):
+            self.assertFalse(
+                self.hardware._verify_discarded(block_device, [0, 4096]))
+
+        # Reading stops at the first sample which is not zeroed.
+        self.assertEqual(1, handle.read.call_count)
+
+    def test_verify_discarded_unreadable(self):
+        block_device = hardware.BlockDevice('/dev/sda', 'big',
+                                            7681501126656, False)
+        opener = mock.MagicMock(side_effect=OSError)
+
+        with mock.patch('builtins.open', opener, create=True):
+            self.assertFalse(
+                self.hardware._verify_discarded(block_device, [0]))
+
     @mock.patch.object(hardware.GenericHardwareManager,
                        '_is_virtual_media_device', autospec=True)
     @mock.patch.object(hardware.GenericHardwareManager,

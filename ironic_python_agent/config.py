@@ -403,6 +403,22 @@ cli_opts = [
                      'cleaning from inadvertently destroying a running '
                      'cluster which may be visible over a storage fabric '
                      'such as FibreChannel.'),
+    cfg.BoolOpt('enable_discard_erase',
+                default=APARAMS.get('ipa-enable-discard-erase', False),
+                help='Whether ``erase_devices`` may erase a block device by '
+                     'discarding it when no secure erase path is available, '
+                     'instead of going straight to ``shred``. This is meant '
+                     'for devices which the platform firmware has frozen out '
+                     'of both ATA erase paths, where discard is the only '
+                     'fast erase left. A device is only reported as erased '
+                     'when a pattern written to sampled positions before the '
+                     'discard reads back as zeroes afterwards, but that '
+                     'verification is a sample and not a full read of the '
+                     'device, so the guarantee is weaker than a secure '
+                     'erase and this is disabled by default. Ironic can '
+                     'override it per node by sending '
+                     '``agent_enable_discard_erase`` in '
+                     '``driver_internal_info``.'),
     cfg.BoolOpt('md5_enabled',
                 default=False,
                 help='If the MD5 algorithm is enabled for file checksums. '

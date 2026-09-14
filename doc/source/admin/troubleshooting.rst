@@ -244,6 +244,41 @@ filesystems may be a concern on some machines, but not others.
 Edit /etc/ironic_python_agent/ironic_python_agent.conf and set the parameter
 ``[DEFAULT]guard_special_filesystems`` to ``False``.
 
+Cleaning takes hours because the firmware froze the disks
+=========================================================
+
+Some platform firmware issues both ``SECURITY FREEZE LOCK`` and
+``SANITIZE FREEZE LOCK`` to attached SATA devices during POST. Both ATA erase
+paths are then unavailable for the lifetime of that boot, no matter what the
+device supports, and ``erase_devices`` is left with ``shred``, which on a
+multi terabyte SSD runs for hours.
+
+Discard is unaffected by either freeze, so the agent can attempt a discard
+before falling back to ``shred``. The path is **off by default**, because the
+agent proves the result by sampling: it writes a recognisable pattern to
+sampled positions, discards the device, and requires those samples to read
+back as zeroes. That establishes that the discard really removes data on this
+device, but it is not a full read of the device and it is not a secure erase.
+Enable it only where that difference is acceptable.
+
+Once enabled, a device is still only reported as erased when the verification
+succeeds. Where discard is unsupported, fails, or cannot be verified, the
+previous behaviour is unchanged.
+
+The option is ``[DEFAULT]enable_discard_erase`` in the agent configuration,
+and it is also accepted as the agent kernel parameter
+``ipa-enable-discard-erase``. For a single node::
+
+  baremetal node set --driver-info kernel_append_params="ipa-enable-discard-erase=True"
+
+Setting it globally is boot interface specific, since the default the node
+level setting overrides comes from the configuration of the boot interface in
+use, for example ``[pxe]kernel_append_params`` or
+``[redfish]kernel_append_params``. The ways to pass an option to the agent,
+including the setting in the embedded configuration file of the ramdisk, are
+described under
+`I'm okay with deleting, how do I tell IPA to clean the disk(s)?`_ above.
+
 
 References
 ==========

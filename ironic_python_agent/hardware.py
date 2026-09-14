@@ -74,6 +74,17 @@ SUPPORTED_SOFTWARE_RAID_LEVELS = frozenset(['0', '1', '1+0', '5', '6'])
 NVME_CLI_FORMAT_SUPPORTED_FLAG = 0b10
 NVME_CLI_CRYPTO_FORMAT_SUPPORTED_FLAG = 0b100
 
+# Size of each sample read back when verifying that a discard really zeroed
+# a device, and the positions of those samples as a fraction of the range
+# which can be read in full.
+DISCARD_VERIFY_SAMPLE_SIZE = 1024 * 1024
+DISCARD_VERIFY_OFFSETS = (0.0, 0.01, 0.1, 0.25, 0.4,
+                          0.5, 0.6, 0.75, 0.9, 0.99)
+# Written to those positions before the discard, so that reading zeroes back
+# afterwards proves the discard removed data which was really there.
+DISCARD_VERIFY_MARKER = b'\xa5'
+DISCARD_VERIFY_DEFAULT_ALIGNMENT = 4096
+
 RAID_APPLY_CONFIGURATION_ARGSINFO = {
     "raid_config": {
         "description": "The RAID configuration to apply.",
@@ -2027,6 +2038,34 @@ class GenericHardwareManager(HardwareManager):
                 if execute_secure_erase and self._ata_erase(block_device):
                     return
         except errors.BlockDeviceEraseError as e:
+            # NOTE(kingspeedy): Some platform firmware issues both
+            # SECURITY FREEZE LOCK and SANITIZE FREEZE LOCK to every attached
+            # SATA device during POST, without offering a setup option to
+            # disable it, so no ATA erase path is available for the lifetime
+            # of that boot. Discard is unaffected by either freeze, and on a
+            # device which returns deterministic zeroes afterwards it is a
+            # far better result than shred. The verification of that
+            # result is a sample rather than a full read of the device, so
+            # the path is opt in and off by default, and it is a decision
+            # separate from the shred fallback: whoever enables it accepts a
+            # verified discard as an erase. When it is disabled, or discard
+            # is unsupported, fails, or cannot be verified, the pre-existing
+            # shred handling below decides what happens, unchanged.
+            execute_discard_erase = info.get('agent_enable_discard_erase',
+                                             CONF.enable_discard_erase)
+            if not execute_discard_erase:
+                LOG.debug('Not attempting a discard based erase of %s, it is '
+                          'not enabled', block_device.name)
+            if execute_discard_erase and self._discard_erase(block_device):
+                # Log why secure erase was unavailable. Without this the
+                # reason is lost whenever the discard succeeds, because the
+                # only other places it is reported are the two shred
+                # branches below, which are then never reached.
+                LOG.info('Erased %(device)s by discarding it because secure '
+                         'erase was not available: %(err)s',
+                         {'device': block_device.name, 'err': e})
+                return
+
             execute_shred = info.get('agent_continue_if_secure_erase_failed')
 
             # NOTE(janders) While we are deprecating
@@ -2566,6 +2605,221 @@ class GenericHardwareManager(HardwareManager):
             msg = (("Failed to nvme format device {}: {}"
                     ).format(block_device, e))
             raise errors.BlockDeviceEraseError(msg)
+
+    def _discard_max_bytes(self, block_device):
+        """Read the discard limit of a device from sysfs.
+
+        :param block_device: a BlockDevice object
+        :returns: the value of queue/discard_max_bytes, or 0 when the
+                  attribute is missing or unreadable. Partitions have no
+                  queue directory of their own, so they read as 0.
+        """
+        dev_name = os.path.basename(block_device.name)
+        try:
+            with open('/sys/block/%s/queue/discard_max_bytes'
+                      % dev_name, 'r') as f:
+                return int(f.read().strip())
+        except (IOError, OSError, ValueError) as e:
+            LOG.debug('Could not read the discard limit of %(name)s: '
+                      '%(err)s', {'name': block_device.name, 'err': e})
+            return 0
+
+    def _discard_sample_offsets(self, block_device):
+        """Positions used to prove that a discard zeroed a device.
+
+        The offsets are derived from the range which can be read in full, so
+        that every fraction yields a position of its own. Deriving them from
+        the full size and clamping each one instead collapses several
+        fractions onto the same offset, silently taking fewer samples than
+        intended.
+
+        :param block_device: a BlockDevice object
+        :returns: a sorted list of aligned offsets, empty when the device is
+                  too small to sample.
+        """
+        size = block_device.size or 0
+        if size <= DISCARD_VERIFY_SAMPLE_SIZE:
+            return []
+
+        # Sample on the boundaries the device itself addresses.
+        try:
+            alignment = int(block_device.logical_sectors)
+        except (TypeError, ValueError):
+            alignment = DISCARD_VERIFY_DEFAULT_ALIGNMENT
+        if alignment <= 0:
+            alignment = DISCARD_VERIFY_DEFAULT_ALIGNMENT
+
+        verifiable = size - DISCARD_VERIFY_SAMPLE_SIZE
+        return sorted({offset - offset % alignment
+                       for offset in (int(verifiable * fraction)
+                                      for fraction
+                                      in DISCARD_VERIFY_OFFSETS)})
+
+    def _write_discard_markers(self, block_device, offsets):
+        """Write a recognisable non-zero pattern to the sampled positions.
+
+        Reading zeroes back from a device proves nothing on its own. A device
+        which was already zeroed, or which returns zeroes for blocks that
+        were never written, passes such a check without the discard having
+        done anything at all. Writing a pattern first turns it into a
+        positive control: every sampled position is then known to have held
+        data which the discard had to remove.
+
+        :param block_device: a BlockDevice object
+        :param offsets: the positions to be verified after the discard
+        :returns: True if every marker reached the device.
+        """
+        marker = DISCARD_VERIFY_MARKER * DISCARD_VERIFY_SAMPLE_SIZE
+        try:
+            with open(block_device.name, 'r+b') as f:
+                for offset in offsets:
+                    f.seek(offset)
+                    f.write(marker)
+                f.flush()
+                os.fsync(f.fileno())
+        except (IOError, OSError) as e:
+            LOG.warning('Could not write the verification markers to '
+                        '%(name)s: %(err)s',
+                        {'name': block_device.name, 'err': e})
+            return False
+        return True
+
+    def _run_blkdiscard(self, block_device, max_bytes):
+        """Discard every block of a device, preferring a secure discard.
+
+        A secure discard is the device guaranteeing that the data cannot be
+        recovered, so it is attempted first. Devices which do not implement
+        it fail the call, and a plain discard is used instead.
+
+        :param block_device: a BlockDevice object
+        :param max_bytes: the discard limit of the device, logged to keep the
+                          decision traceable
+        :returns: True if one of the two variants succeeded and the buffer
+                  cache of the device was invalidated afterwards.
+        """
+        for args, kind in ((('--secure',), 'secure discard'),
+                           ((), 'discard')):
+            LOG.info('Attempting to erase %(name)s by %(kind)s, '
+                     'discard_max_bytes is %(max_bytes)s',
+                     {'name': block_device.name, 'kind': kind,
+                      'max_bytes': max_bytes})
+            try:
+                utils.execute('blkdiscard', *args, block_device.name)
+            except (processutils.ProcessExecutionError, OSError) as e:
+                LOG.warning('Could not %(kind)s %(name)s, blkdiscard '
+                            'failed: %(err)s',
+                            {'kind': kind, 'name': block_device.name,
+                             'err': e})
+                continue
+
+            # Invalidate the buffer cache of the device, otherwise the
+            # verification can be served the markers written above rather
+            # than what the device returns now.
+            try:
+                utils.execute('blockdev', '--flushbufs', block_device.name)
+            except (processutils.ProcessExecutionError, OSError) as e:
+                LOG.warning('Could not flush the buffers of %(name)s: '
+                            '%(err)s',
+                            {'name': block_device.name, 'err': e})
+                return False
+            return True
+
+        return False
+
+    def _verify_discarded(self, block_device, offsets):
+        """Check that the sampled positions read back as zeroes.
+
+        The check is deliberately empirical. A device advertising RZAT (Read
+        Zero After TRIM) claims to return zeroes, but that is a firmware
+        claim rather than proof, and the sysfs attributes which look like
+        they would answer the question do not. queue/discard_zeroes_data has
+        reported a constant 0 since kernel 4.12, and
+        queue/write_zeroes_max_bytes describes WRITE ZEROES, which libata
+        does not offer at all.
+
+        :param block_device: a BlockDevice object
+        :param offsets: the positions written by _write_discard_markers
+        :returns: True if every sample read back as zeroes.
+        """
+        try:
+            with open(block_device.name, 'rb') as f:
+                for offset in offsets:
+                    f.seek(offset)
+                    if any(f.read(DISCARD_VERIFY_SAMPLE_SIZE)):
+                        LOG.warning('Device %(name)s still holds non-zero '
+                                    'data at offset %(offset)s after being '
+                                    'discarded',
+                                    {'name': block_device.name,
+                                     'offset': hex(offset)})
+                        return False
+        except (IOError, OSError) as e:
+            LOG.warning('Could not read back %(name)s to verify the '
+                        'discard: %(err)s',
+                        {'name': block_device.name, 'err': e})
+            return False
+
+        LOG.info('Verified %(count)s samples of %(name)s as zeroed after '
+                 'the discard', {'count': len(offsets),
+                                 'name': block_device.name})
+        return True
+
+    def _discard_erase(self, block_device):
+        """Attempt to erase a device by discarding every block.
+
+        Only reports success when a pattern written beforehand was read back
+        as zeroes afterwards, so a device which silently ignores the discard,
+        or which leaves the old contents readable, falls through to the
+        caller's remaining options instead of being reported as erased.
+
+        The caller decides whether this path may run at all, see
+        ``[DEFAULT] enable_discard_erase``.
+
+        :param block_device: a BlockDevice object
+        :returns: True if the device was discarded and the result verified,
+                  False in every other case.
+        """
+        LOG.info('Attempting to erase %s by discarding it',
+                 block_device.name)
+
+        max_bytes = self._discard_max_bytes(block_device)
+        if not max_bytes:
+            LOG.info('Not erasing %s by discarding it, the device does not '
+                     'report support for discard', block_device.name)
+            return False
+
+        offsets = self._discard_sample_offsets(block_device)
+        if not offsets:
+            LOG.warning('Not erasing %(name)s by discarding it, its size '
+                        '%(size)s is too small to verify the result',
+                        {'name': block_device.name,
+                         'size': block_device.size})
+            return False
+
+        # NOTE(kingspeedy): the markers are written before the discard, so
+        # the device is modified from here on even if the discard then fails.
+        # That is acceptable in an erase path: a device which is not erased
+        # leaves the clean step failed, and ironic does not hand a node in
+        # that state to a tenant.
+        if not self._write_discard_markers(block_device, offsets):
+            LOG.warning('Could not erase %s by discarding it, the markers '
+                        'the verification needs could not be written',
+                        block_device.name)
+            return False
+
+        if not self._run_blkdiscard(block_device, max_bytes):
+            LOG.warning('Could not erase %s by discarding it, neither a '
+                        'secure discard nor a plain discard of the device '
+                        'succeeded', block_device.name)
+            return False
+
+        if not self._verify_discarded(block_device, offsets):
+            LOG.warning('Could not erase %s by discarding it, the sampled '
+                        'positions did not read back as zeroes afterwards',
+                        block_device.name)
+            return False
+
+        LOG.info('Device %s was erased by discarding it', block_device.name)
+        return True
 
     def get_bmc_address(self):
         """Attempt to detect BMC IP address
