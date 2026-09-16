@@ -167,7 +167,7 @@ class TestInspect(base.IronicAgentTest):
         mock_call.assert_called_with_failure(expect_error=True)
 
     def test_inspector_error(self, mock_ext_mgr, mock_call):
-        mock_call.return_value = None
+        mock_call.side_effect = errors.InspectionError('test')
         mock_ext_mgr.return_value = [self.mock_ext]
 
         self.assertRaises(errors.InspectionError,
@@ -240,15 +240,16 @@ class TestCallInspector(base.IronicAgentTest):
         failures = utils.AccumulatedFailures()
         data = collections.OrderedDict(data=42)
         mock_session.return_value.post.return_value.status_code = 400
+        mock_session.return_value.post.return_value.content = b'error'
 
-        res = inspector.call_inspector(data, failures)
+        self.assertRaises(errors.InspectionError,
+                          inspector.call_inspector, data, failures)
 
         mock_session.return_value.post.assert_called_once_with(
             'url',
             data='{"data": 42, "error": null}',
             headers=mock.ANY,
             timeout=30)
-        self.assertIsNone(res)
 
     @mock.patch.object(inspector, '_RETRY_WAIT', 0.01)
     @mock.patch.object(inspector, '_RETRY_WAIT_MAX', 1)
