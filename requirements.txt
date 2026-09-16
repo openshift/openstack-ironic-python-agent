@@ -14,3 +14,6 @@ cryptography>=2.3 # BSD/Apache-2.0
 tooz>=2.7.2 # Apache-2.0
 zeroconf>=0.24.0 # LGPL
 cheroot>=10.0.1 # BSD
+# NOTE(tkajinam): pyparsing is an indirect dependency via oslo.utils. Maybe
+# remove this once oslo.utils is bumped and requires pyparsing>3.0.0
+pyparsing>=3.0.0 # MIT

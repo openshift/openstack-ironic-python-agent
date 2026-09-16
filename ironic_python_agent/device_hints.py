@@ -52,9 +52,9 @@ def _extract_hint_operator_and_values(hint_expression, hint_name):
     if not expression:
         raise ValueError(f'Root device hint {hint_name} expression is empty')
 
-    # parseString() returns a list of tokens which the operator (if
+    # parse_string() returns a list of tokens which the operator (if
     # present) is always the first element.
-    ast = ROOT_DEVICE_HINTS_GRAMMAR.parseString(expression)
+    ast = ROOT_DEVICE_HINTS_GRAMMAR.parse_string(expression)
     if len(ast) <= 1:
         # hint_expression had no operator
         return {'op': '', 'values': [expression]}
