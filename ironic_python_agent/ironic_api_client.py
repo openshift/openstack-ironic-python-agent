@@ -194,7 +194,7 @@ class APIClient(object):
             raise errors.HeartbeatError(error)
 
     def lookup_node(self, hardware_info, timeout, starting_interval,
-                    node_uuid=None, max_interval=60):
+                    node_uuid=None, max_interval=60, log_extra=""):
         retry = tenacity.retry(
             retry=tenacity.retry_if_result(lambda r: r is False),
             stop=tenacity.stop_after_delay(timeout),
@@ -203,12 +203,13 @@ class APIClient(object):
             reraise=True)
         try:
             return retry(self._do_lookup)(hardware_info=hardware_info,
-                                          node_uuid=node_uuid)
+                                          node_uuid=node_uuid,
+                                          log_extra=log_extra)
         except tenacity.RetryError:
             raise errors.LookupNodeError('Could not look up node info. Check '
                                          'logs for details.')
 
-    def _do_lookup(self, hardware_info, node_uuid):
+    def _do_lookup(self, hardware_info, node_uuid, log_extra=""):
         """The actual call to lookup a node."""
         params = {
             'addresses': ','.join(iface.mac_address
@@ -282,10 +283,10 @@ class APIClient(object):
 
         if response.status_code != requests.codes.OK:
             LOG.warning(
-                'Failed looking up node with addresses %r at %s. '
-                'Check if inspection has completed? %s',
+                'Failed looking up node with addresses %r at %s: %s%s',
                 params['addresses'], self.api_urls[0],
-                self._error_from_response(response)
+                self._error_from_response(response),
+                "\n" + log_extra if log_extra else "",
             )
             return False
 
