@@ -542,10 +542,10 @@ def destroy_disk_metadata(dev, node_uuid):
                 ctxt.reraise = False
                 utils.execute('wipefs', '--all', dev,
                               use_standard_locale=True)
-    # NOTE(TheJulia): sgdisk attempts to load and make sense of the
-    # partition tables in advance of wiping the partition data.
-    # This means when a CRC error is found, sgdisk fails before
-    # erasing partition data.
+    # NOTE(stevebaker): Zero the partition table areas directly rather than
+    # relying on a partitioning tool. Such tools generally parse the existing
+    # table first and refuse to touch it when a CRC error is found, which is
+    # exactly the situation we need to recover from.
     # This is the same bug as
     # https://bugs.launchpad.net/ironic-python-agent/+bug/1737556
 
@@ -577,9 +577,6 @@ def destroy_disk_metadata(dev, node_uuid):
         utils.execute('dd', dd_bs, 'if=/dev/zero', dd_device, dd_count,
                       'oflag=direct', dd_seek, use_standard_locale=True)
 
-    # Go ahead and let sgdisk run as well.
-    utils.execute('sgdisk', '-Z', dev, use_standard_locale=True)
-
     try:
         wait_for_disk_to_become_available(dev)
     except errors.RESTError as e:
@@ -599,11 +596,13 @@ def _fix_gpt_structs(device, node_uuid):
         commands fail.
     """
     try:
-        output, _err = utils.execute('sgdisk', '-v', device)
+        output, err = utils.execute('sfdisk', '--verify', device,
+                                    use_standard_locale=True)
 
-        search_str = "it doesn't reside\nat the end of the disk"
-        if search_str in output:
-            utils.execute('sgdisk', '-e', device)
+        search_str = 'The backup GPT table is not on the end of the device.'
+        if search_str in output or search_str in err:
+            utils.execute('sfdisk', '--relocate', 'gpt-bak-std', device,
+                          use_standard_locale=True)
     except (processutils.UnknownArgumentError,
             processutils.ProcessExecutionError, OSError) as e:
         msg = ('Failed to fix GPT data structures on disk %(disk)s '
@@ -709,7 +708,13 @@ def trigger_device_rescan(device, attempts=None):
     udev_settle()
     try:
         # Also verify that the partitioning is correct now.
-        utils.execute('sgdisk', '-v', device)
+        result = utils.execute('sfdisk', '--verify', device,
+                               use_standard_locale=True)
+        err = result[1] if isinstance(result, tuple) else ''
+        if err:
+            LOG.warning('Failed to verify partition tables on device %(dev)s: '
+                        '%(err)s', {'dev': device, 'err': err})
+            return False
     except processutils.ProcessExecutionError as exc:
         LOG.warning('Failed to verify partition tables on device %(dev)s: '
                     '%(err)s', {'dev': device, 'err': exc})
