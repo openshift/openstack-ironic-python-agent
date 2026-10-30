@@ -229,7 +229,8 @@ class MakePartitionsTestCase(base.IronicAgentTest):
                       mock.call('udevadm', 'settle'),
                       mock.call('partprobe', self.dev, attempts=10),
                       mock.call('udevadm', 'settle'),
-                      mock.call('sgdisk', '-v', self.dev)]
+                      mock.call('sfdisk', '--verify', self.dev,
+                                use_standard_locale=True)]
 
         mock_exc.assert_has_calls([parted_call, fuser_call] + sync_calls)
 
@@ -355,7 +356,6 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
             ('524288\n', None),
             (None, None),
             (None, None),
-            (None, None),
             (None, None)])
 
         expected_calls = [mock.call('wipefs', '--force', '--all', 'fake-dev',
@@ -368,8 +368,6 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
                           mock.call('dd', 'bs=4096', 'if=/dev/zero',
                                     'of=fake-dev', 'count=5', 'oflag=direct',
                                     'seek=123', use_standard_locale=True),
-                          mock.call('sgdisk', '-Z', 'fake-dev',
-                                    use_standard_locale=True),
                           mock.call('fuser', self.dev, check_exit_code=[0, 1])]
         disk_utils.destroy_disk_metadata(self.dev, self.node_uuid)
         mock_exec.assert_has_calls(expected_calls)
@@ -384,7 +382,6 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
             ('524288\n', None),
             (None, None),
             (None, None),
-            (None, None),
             (None, None)])
 
         expected_calls = [mock.call('wipefs', '--force', '--all', 'fake-dev',
@@ -397,8 +394,6 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
                           mock.call('dd', 'bs=512', 'if=/dev/zero',
                                     'of=fake-dev', 'count=33', 'oflag=direct',
                                     'seek=991', use_standard_locale=True),
-                          mock.call('sgdisk', '-Z', 'fake-dev',
-                                    use_standard_locale=True),
                           mock.call('fuser', self.dev, check_exit_code=[0, 1])]
         disk_utils.destroy_disk_metadata(self.dev, self.node_uuid)
         mock_exec.assert_has_calls(expected_calls)
@@ -414,7 +409,7 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
                           self.node_uuid)
         mock_exec.assert_has_calls(expected_call)
 
-    def test_destroy_disk_metadata_sgdisk_fail(self, mock_exec):
+    def test_destroy_disk_metadata_dd_fail(self, mock_exec):
         expected_calls = [mock.call('wipefs', '--force', '--all', 'fake-dev',
                                     use_standard_locale=True),
                           mock.call('blockdev', '--getss', 'fake-dev'),
@@ -424,14 +419,11 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
                                     use_standard_locale=True),
                           mock.call('dd', 'bs=512', 'if=/dev/zero',
                                     'of=fake-dev', 'count=33', 'oflag=direct',
-                                    'seek=991', use_standard_locale=True),
-                          mock.call('sgdisk', '-Z', 'fake-dev',
-                                    use_standard_locale=True)]
+                                    'seek=991', use_standard_locale=True)]
         mock_exec.side_effect = iter([
             (None, None),
             ('512\n', None),
             ('524288\n', None),
-            (None, None),
             (None, None),
             processutils.ProcessExecutionError()])
         self.assertRaises(processutils.ProcessExecutionError,
@@ -446,7 +438,6 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
             (None, None),
             ('512\n', None),
             ('524288\n', None),
-            (None, None),
             (None, None),
             (None, None),
             (None, None)])
@@ -465,15 +456,11 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
                           mock.call('blockdev', '--getsize64', 'fake-dev'),
                           mock.call('dd', 'bs=512', 'if=/dev/zero',
                                     'of=fake-dev', 'count=2', 'oflag=direct',
-                                    use_standard_locale=True),
-                          mock.call('sgdisk', '-Z', 'fake-dev',
                                     use_standard_locale=True)]
         mock_exec.side_effect = iter([
             (None, None),
             ('512\n', None),
             ('1024\n', None),  # an EBR is 2 sectors
-            (None, None),
-            (None, None),
             (None, None),
             (None, None)])
         disk_utils.destroy_disk_metadata(self.dev, self.node_uuid)
@@ -489,14 +476,11 @@ class DestroyMetaDataTestCase(base.IronicAgentTest):
                                     use_standard_locale=True),
                           mock.call('dd', 'bs=512', 'if=/dev/zero',
                                     'of=fake-dev', 'count=33', 'oflag=direct',
-                                    'seek=9', use_standard_locale=True),
-                          mock.call('sgdisk', '-Z', 'fake-dev',
-                                    use_standard_locale=True)]
+                                    'seek=9', use_standard_locale=True)]
         mock_exec.side_effect = iter([
             (None, None),
             ('512\n', None),
             ('21504\n', None),
-            (None, None),
             (None, None),
             (None, None),
             (None, None)])
@@ -630,18 +614,14 @@ class FixGptStructsTestCases(base.IronicAgentTest):
         self.node_uuid = "12345678-1234-1234-1234-1234567890abcxyz"
 
     def test_fix_gpt_structs_fix_required(self, mock_execute):
-        sgdisk_v_output = """
-Problem: The secondary header's self-pointer indicates that it doesn't reside
-at the end of the disk. If you've added a disk to a RAID array, use the 'e'
-option on the experts' menu to adjust the secondary header's and partition
-table's locations.
-
-Identified 1 problems!
-"""
-        mock_execute.return_value = (sgdisk_v_output, '')
+        sfdisk_verify_error = (
+            'The backup GPT table is not on the end of the device.')
+        mock_execute.return_value = ('', sfdisk_verify_error)
         execute_calls = [
-            mock.call('sgdisk', '-v', '/dev/fake'),
-            mock.call('sgdisk', '-e', '/dev/fake')
+            mock.call('sfdisk', '--verify', '/dev/fake',
+                      use_standard_locale=True),
+            mock.call('sfdisk', '--relocate', 'gpt-bak-std', '/dev/fake',
+                      use_standard_locale=True)
         ]
         disk_utils._fix_gpt_structs('/dev/fake', self.node_uuid)
         mock_execute.assert_has_calls(execute_calls)
@@ -650,7 +630,8 @@ Identified 1 problems!
         mock_execute.return_value = ('', '')
 
         disk_utils._fix_gpt_structs('/dev/fake', self.node_uuid)
-        mock_execute.assert_called_once_with('sgdisk', '-v', '/dev/fake')
+        mock_execute.assert_called_once_with(
+            'sfdisk', '--verify', '/dev/fake', use_standard_locale=True)
 
     @mock.patch.object(disk_utils.LOG, 'error', autospec=True)
     def test_fix_gpt_structs_exc(self, mock_log, mock_execute):
@@ -659,7 +640,8 @@ Identified 1 problems!
                                'Failed to fix GPT data structures on disk',
                                disk_utils._fix_gpt_structs,
                                self.dev, self.node_uuid)
-        mock_execute.assert_called_once_with('sgdisk', '-v', '/dev/fake')
+        mock_execute.assert_called_once_with(
+            'sfdisk', '--verify', '/dev/fake', use_standard_locale=True)
         self.assertEqual(1, mock_log.call_count)
 
 
@@ -672,7 +654,8 @@ class TriggerDeviceRescanTestCase(base.IronicAgentTest):
             mock.call('udevadm', 'settle'),
             mock.call('partprobe', '/dev/fake', attempts=10),
             mock.call('udevadm', 'settle'),
-            mock.call('sgdisk', '-v', '/dev/fake'),
+            mock.call('sfdisk', '--verify', '/dev/fake',
+                      use_standard_locale=True),
         ])
 
     def test_custom_attempts(self, mock_execute):
@@ -683,7 +666,8 @@ class TriggerDeviceRescanTestCase(base.IronicAgentTest):
             mock.call('udevadm', 'settle'),
             mock.call('partprobe', '/dev/fake', attempts=1),
             mock.call('udevadm', 'settle'),
-            mock.call('sgdisk', '-v', '/dev/fake'),
+            mock.call('sfdisk', '--verify', '/dev/fake',
+                      use_standard_locale=True),
         ])
 
     def test_fails(self, mock_execute):
@@ -696,7 +680,22 @@ class TriggerDeviceRescanTestCase(base.IronicAgentTest):
             mock.call('udevadm', 'settle'),
             mock.call('partprobe', '/dev/fake', attempts=10),
             mock.call('udevadm', 'settle'),
-            mock.call('sgdisk', '-v', '/dev/fake'),
+            mock.call('sfdisk', '--verify', '/dev/fake',
+                      use_standard_locale=True),
+        ])
+
+    def test_verify_reports_error(self, mock_execute):
+        mock_execute.side_effect = [('', '')] * 4 + [
+            ('', '1 error detected.')
+        ]
+        self.assertFalse(disk_utils.trigger_device_rescan('/dev/fake'))
+        mock_execute.assert_has_calls([
+            mock.call('sync'),
+            mock.call('udevadm', 'settle'),
+            mock.call('partprobe', '/dev/fake', attempts=10),
+            mock.call('udevadm', 'settle'),
+            mock.call('sfdisk', '--verify', '/dev/fake',
+                      use_standard_locale=True),
         ])
 
 
