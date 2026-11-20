@@ -1,0 +1,13 @@
+---
+upgrade:
+  - |
+    UEFI local-boot partition images must include valid EFI boot assets in the
+    root filesystem when GRUB installation is disabled. Images without a
+    usable EFI loader can no longer rely on IPA to install one during deploy.
+fixes:
+  - |
+    When GRUB installation is disabled, the agent now preserves pre-installed
+    EFI assets from a partition image onto the target EFI system partition.
+    This supports UEFI local boot without running GRUB tools from the deployed
+    image. Symlinked EFI entries are skipped so preservation cannot follow
+    links out of the mounted image.

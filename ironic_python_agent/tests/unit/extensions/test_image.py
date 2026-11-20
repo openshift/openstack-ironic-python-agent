@@ -38,7 +38,7 @@ EFI_RESULT = ''.encode('utf-16')
 @mock.patch.object(hardware, 'dispatch_to_managers', autospec=True)
 @mock.patch.object(utils, 'execute', autospec=True)
 @mock.patch.object(tempfile, 'mkdtemp', lambda *_: '/tmp/fake-dir')
-@mock.patch.object(shutil, 'rmtree', lambda *_: None)
+@mock.patch.object(shutil, 'rmtree', lambda *_, **__: None)
 class TestImageExtension(base.IronicAgentTest):
 
     def setUp(self):
@@ -125,6 +125,53 @@ class TestImageExtension(base.IronicAgentTest):
             prep_boot_part_uuid=None,
             target_boot_mode='uefi'
         )
+
+    @mock.patch.object(image, '_try_preserve_efi_assets_from_partition_image',
+                       autospec=True)
+    @mock.patch.object(image, '_efi_boot_setup', autospec=True)
+    @mock.patch.object(image, '_install_grub2', autospec=True)
+    def test__install_bootloader_uefi_disabled_preserves_assets(
+            self, mock_grub2, mock_efi_setup, mock_preserve,
+            mock_execute, mock_dispatch):
+        self.config(enable_bios_bootloader_install=False)
+        mock_dispatch.return_value = self.fake_dev
+        mock_efi_setup.return_value = False
+        mock_preserve.return_value = True
+
+        result = self.agent_extension.install_bootloader(
+            root_uuid=self.fake_root_uuid,
+            efi_system_part_uuid=self.fake_efi_system_part_uuid,
+            target_boot_mode='uefi').join()
+
+        self.assertIsNone(result.command_error)
+        mock_preserve.assert_called_once_with(
+            self.fake_dev, self.fake_root_uuid,
+            self.fake_efi_system_part_uuid)
+        mock_grub2.assert_not_called()
+
+    @mock.patch.object(image, '_try_preserve_efi_assets_from_partition_image',
+                       autospec=True)
+    @mock.patch.object(image, '_efi_boot_setup', autospec=True)
+    @mock.patch.object(image, '_install_grub2', autospec=True)
+    def test__install_bootloader_uefi_disabled_without_assets_fails(
+            self, mock_grub2, mock_efi_setup, mock_preserve,
+            mock_execute, mock_dispatch):
+        self.config(enable_bios_bootloader_install=False)
+        self.config(ignore_bootloader_failure=False)
+        mock_dispatch.return_value = self.fake_dev
+        mock_efi_setup.return_value = False
+        mock_preserve.return_value = False
+
+        result = self.agent_extension.install_bootloader(
+            root_uuid=self.fake_root_uuid,
+            efi_system_part_uuid=self.fake_efi_system_part_uuid,
+            target_boot_mode='uefi').join()
+
+        self.assertIsNotNone(result.command_error)
+        mock_preserve.assert_called_once_with(
+            self.fake_dev, self.fake_root_uuid,
+            self.fake_efi_system_part_uuid)
+        mock_grub2.assert_not_called()
 
     @mock.patch.object(efi_utils, 'manage_uefi', autospec=True)
     @mock.patch.object(image, '_install_grub2', autospec=True)
@@ -1016,6 +1063,57 @@ Boot0004* ironic1      HD(1,GPT,55db8d03-c8f6-4a5b-9155-790dddc348fa,0x800,0x640
                                            uuid=self.fake_efi_system_part_uuid)
         self.assertFalse(mock_dispatch.called)
 
+    @mock.patch.object(image, '_try_preserve_efi_assets', autospec=True)
+    @mock.patch.object(image, '_append_uefi_to_fstab', autospec=True)
+    @mock.patch.object(partition_utils, 'get_partition', autospec=True)
+    @mock.patch.object(hardware, 'is_md_device', autospec=True)
+    def test__try_preserve_efi_assets_from_partition_image(
+            self, mock_is_md_device, mock_get_partition,
+            mock_append_to_fstab, mock_try_preserve,
+            mock_execute, mock_dispatch):
+        mock_is_md_device.return_value = False
+        mock_get_partition.side_effect = [self.fake_root_part,
+                                          self.fake_efi_system_part]
+        mock_try_preserve.return_value = True
+
+        result = image._try_preserve_efi_assets_from_partition_image(
+            self.fake_dev, self.fake_root_uuid,
+            self.fake_efi_system_part_uuid)
+
+        self.assertTrue(result)
+        mock_try_preserve.assert_called_once_with(
+            self.fake_dev, self.fake_dir, self.fake_efi_system_part_uuid,
+            self.fake_efi_system_part, self.fake_dir + '/boot/efi',
+            configure_grub=False)
+        mock_append_to_fstab.assert_called_once_with(
+            self.fake_dir, self.fake_efi_system_part_uuid)
+        mock_execute.assert_has_calls([
+            mock.call('mount', self.fake_root_part, self.fake_dir),
+            mock.call('umount', self.fake_dir, attempts=3,
+                      delay_on_retry=True)])
+
+    def test__try_preserve_efi_assets_can_skip_grub_configuration(
+            self, mock_execute, mock_dispatch):
+        with mock.patch.object(os.path, 'exists', autospec=True,
+                               return_value=True), \
+                mock.patch.object(os, 'listdir', autospec=True,
+                                  return_value=['BOOT']), \
+                mock.patch.object(os.path, 'isfile', autospec=True,
+                                  return_value=False), \
+                mock.patch.object(image, '_configure_grub',
+                                  autospec=True) as configure_grub, \
+                mock.patch.object(image, '_preserve_efi_assets',
+                                  autospec=True, return_value=True), \
+                mock.patch.object(image, '_efi_boot_setup',
+                                  autospec=True, return_value=True):
+            result = image._try_preserve_efi_assets(
+                self.fake_dev, self.fake_dir, self.fake_efi_system_part_uuid,
+                self.fake_efi_system_part, self.fake_dir + '/boot/efi',
+                configure_grub=False)
+
+        self.assertTrue(result)
+        configure_grub.assert_not_called()
+
     @mock.patch.object(os.path, 'ismount', lambda *_: False)
     @mock.patch.object(os, 'listdir', lambda *_: ['file1', 'file2'])
     @mock.patch.object(image, '_is_bootloader_loaded', lambda *_: False)
@@ -1052,7 +1150,8 @@ Boot0004* ironic1      HD(1,GPT,55db8d03-c8f6-4a5b-9155-790dddc348fa,0x800,0x640
                                                self.fake_efi_system_part_uuid)
         mock_copytree.assert_has_calls([
             mock.call(self.fake_dir + '/boot/efi/EFI',
-                      self.fake_dir + '/efi_loader'),
+                      self.fake_dir + '/efi_loader',
+                      ignore=image._ignore_efi_symlinks),
             mock.call(self.fake_dir + '/efi_loader',
                       self.fake_dir + '/boot/efi/EFI')])
 
@@ -1141,7 +1240,8 @@ Boot0004* ironic1      HD(1,GPT,55db8d03-c8f6-4a5b-9155-790dddc348fa,0x800,0x640
                                                self.fake_efi_system_part_uuid)
         mock_copytree.assert_has_calls([
             mock.call(self.fake_dir + '/boot/efi/EFI',
-                      self.fake_dir + '/efi_loader'),
+                      self.fake_dir + '/efi_loader',
+                      ignore=image._ignore_efi_symlinks),
             mock.call(self.fake_dir + '/efi_loader',
                       self.fake_dir + '/boot/efi/EFI')])
 
@@ -1308,7 +1408,8 @@ Boot0004* ironic1      HD(1,GPT,55db8d03-c8f6-4a5b-9155-790dddc348fa,0x800,0x640
             self.fake_dir,
             self.fake_dir + '/boot/efi/EFI',
             '/dev/fake1',
-            self.fake_dir + '/boot/efi')
+            self.fake_dir + '/boot/efi',
+            configure_grub=True)
         mock_append_to_fstab.assert_called_with(self.fake_dir,
                                                 self.fake_efi_system_part_uuid)
 
@@ -1432,7 +1533,8 @@ Boot0004* ironic1      HD(1,GPT,55db8d03-c8f6-4a5b-9155-790dddc348fa,0x800,0x640
             self.fake_dir,
             self.fake_dir + '/boot/efi/EFI',
             '/dev/fake1',
-            self.fake_dir + '/boot/efi')
+            self.fake_dir + '/boot/efi',
+            configure_grub=True)
         mock_append_to_fstab.assert_called_with(self.fake_dir,
                                                 self.fake_efi_system_part_uuid)
 
@@ -1477,7 +1579,8 @@ Boot0004* ironic1      HD(1,GPT,55db8d03-c8f6-4a5b-9155-790dddc348fa,0x800,0x640
                                                self.fake_efi_system_part_uuid)
         mock_copytree.assert_has_calls([
             mock.call(self.fake_dir + '/boot/efi/EFI',
-                      self.fake_dir + '/efi_loader'),
+                      self.fake_dir + '/efi_loader',
+                      ignore=image._ignore_efi_symlinks),
             mock.call(self.fake_dir + '/efi_loader',
                       self.fake_dir + '/boot/efi/EFI')])
 
@@ -2052,3 +2155,40 @@ Boot0004* ironic1      HD(1,GPT,55db8d03-c8f6-4a5b-9155-790dddc348fa,0x800,0x640
             mock_open.side_effect = OSError('boom')
             image._append_uefi_to_fstab(
                 self.fake_dir, 'abcd-efgh')
+
+
+class TestEfiAssetCopy(base.IronicAgentTest):
+
+    def test_copy_efi_assets_skips_symlinked_files_and_directories(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source = os.path.join(tmp_dir, 'EFI')
+            boot_dir = os.path.join(source, 'BOOT')
+            destination = os.path.join(tmp_dir, 'saved')
+            os.makedirs(boot_dir)
+
+            loader = os.path.join(boot_dir, 'BOOTX64.EFI')
+            with open(loader, 'w') as stream:
+                stream.write('prebuilt loader')
+
+            os.symlink('/etc', os.path.join(source, 'host-etc'))
+            os.symlink('/etc/passwd', os.path.join(boot_dir, 'grub.cfg'))
+
+            shutil.copytree(source, destination,
+                            ignore=image._ignore_efi_symlinks)
+
+            loader_copy = os.path.join(destination, 'BOOT', 'BOOTX64.EFI')
+            with open(loader_copy) as stream:
+                self.assertEqual('prebuilt loader', stream.read())
+            self.assertFalse(os.path.lexists(
+                os.path.join(destination, 'host-etc')))
+            self.assertFalse(os.path.lexists(
+                os.path.join(destination, 'BOOT', 'grub.cfg')))
+
+    def test_efi_assets_path_rejects_symlinked_components(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            efi_link = os.path.join(tmp_dir, 'efi')
+            os.symlink('/etc', efi_link)
+            assets_path = os.path.join(efi_link, 'EFI')
+
+            self.assertTrue(image._has_symlink_component(tmp_dir,
+                                                         assets_path))
