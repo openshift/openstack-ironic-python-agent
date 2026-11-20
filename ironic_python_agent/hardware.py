@@ -449,10 +449,33 @@ def md_restart(raid_device):
     """
     try:
         LOG.debug('Restarting software RAID device %s', raid_device)
+        # NOTE(mnasiadka): If the image is LVM based we need to clean
+        # dmsetup devices, because mdadm --stop will fail. They are
+        # reactivated after reassembly, so that the root LV can be
+        # mounted for bootloader installation.
+        dm_cleaned = False
+        try:
+            dmsetup_stdout, _ = utils.execute('dmsetup', 'table',
+                                              use_standard_locale=True)
+        except FileNotFoundError:
+            LOG.debug('dmsetup has not been found, skipping device-mapper '
+                      'cleanup for %s', raid_device)
+        else:
+            if 'No devices found' not in dmsetup_stdout:
+                LOG.debug('Deactivating LVM')
+                utils.execute('dmsetup', 'remove_all')
+                dm_cleaned = True
         component_devices = get_component_devices(raid_device)
         utils.execute('mdadm', '--stop', raid_device)
         utils.execute('mdadm', '--assemble', raid_device,
                       *component_devices)
+        if dm_cleaned:
+            LOG.debug('Reactivating LVM')
+            try:
+                utils.execute('vgchange', '-ay')
+            except FileNotFoundError:
+                LOG.warning('vgchange has not been found, skipping LVM '
+                            'reactivation for %s', raid_device)
     except processutils.ProcessExecutionError as e:
         error_msg = ('Could not restart md device %(dev)s: %(err)s' %
                      {'dev': raid_device, 'err': e})

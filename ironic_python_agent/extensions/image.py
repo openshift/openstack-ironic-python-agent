@@ -433,10 +433,27 @@ def _mount_for_chroot(path):
     utils.execute('mount', '-t', 'sysfs', 'none', path + '/sys')
 
 
+def _has_symlink_component(root, path):
+    """Check whether a path below root contains a symlink component."""
+    current = root
+    for component in os.path.relpath(path, root).split(os.sep):
+        current = os.path.join(current, component)
+        if os.path.islink(current):
+            return True
+    return False
+
+
+def _ignore_efi_symlinks(directory, entries):
+    """Ignore symlinks while copying EFI assets from an image."""
+    return [entry for entry in entries
+            if os.path.islink(os.path.join(directory, entry))]
+
+
 def _try_preserve_efi_assets(device, path,
                              efi_system_part_uuid,
                              efi_partition,
-                             efi_partition_mount_point):
+                             efi_partition_mount_point,
+                             configure_grub=True):
     """Attempt to preserve UEFI boot assets.
 
     :param device: The device upon which to try to preserve assets.
@@ -449,27 +466,33 @@ def _try_preserve_efi_assets(device, path,
     :param efi_partition_mount_point: The folder at which to mount
                                       the assets for the process of
                                       preservation.
+    :param configure_grub: Whether to regenerate the GRUB configuration from
+                           the deployed image before preserving its assets.
 
     :returns: True if assets have been preserved, otherwise False.
               None is the result of this method if a failure has
               occurred.
     """
     efi_assets_folder = efi_partition_mount_point + '/EFI'
-    if os.path.exists(efi_assets_folder):
+    if (not _has_symlink_component(path, efi_assets_folder)
+            and os.path.exists(efi_assets_folder)):
         # We appear to have EFI Assets, that need to be preserved
         # and as such if we succeed preserving them, we will be returned
         # True from _preserve_efi_assets to correspond with success or
         # failure in this action.
-        # NOTE(TheJulia): Still makes sense to invoke grub-install as
-        # fragmentation of grub has occurred.
-        if (os.path.exists(os.path.join(path, 'usr/sbin/grub2-install'))
-            or os.path.exists(os.path.join(path, 'usr/sbin/grub-install'))):
-            _configure_grub(device, path)
-        # But first, if we have grub, we should try to build a grub config!
+        if configure_grub:
+            # Regenerate the configuration for the GRUB-install fallback.
+            # The pre-installed-assets path must not execute tools from the
+            # deployed image.
+            grub2_install = os.path.join(path, 'usr/sbin/grub2-install')
+            grub_install = os.path.join(path, 'usr/sbin/grub-install')
+            if os.path.exists(grub2_install) or os.path.exists(grub_install):
+                _configure_grub(device, path)
         LOG.debug('EFI asset folder detected, attempting to preserve assets.')
         if _preserve_efi_assets(path, efi_assets_folder,
                                 efi_partition,
-                                efi_partition_mount_point):
+                                efi_partition_mount_point,
+                                configure_grub=configure_grub):
             try:
                 # Since we have preserved the assets, we should be able
                 # to call the _efi_boot_setup method to scan the device
@@ -483,6 +506,53 @@ def _try_preserve_efi_assets(device, path,
                 LOG.debug('Exception encountered while attempting to '
                           'setup the EFI loader from a root '
                           'filesystem. Error: %s', e)
+
+
+def _try_preserve_efi_assets_from_partition_image(
+        device, root_uuid, efi_system_part_uuid):
+    """Preserve pre-installed UEFI assets without installing GRUB.
+
+    This is used when GRUB installation is disabled. It only copies the
+    existing EFI assets from the root partition to the target ESP; it does not
+    execute GRUB tools from the deployed image.
+
+    :param device: The device being deployed to.
+    :param root_uuid: UUID of the root partition containing the EFI assets.
+    :param efi_system_part_uuid: UUID of the target EFI system partition.
+    :returns: True if existing EFI assets were preserved successfully.
+    """
+    if hardware.is_md_device(device):
+        return False
+
+    root_partition = partition_utils.get_partition(device, uuid=root_uuid)
+    efi_partition = partition_utils.get_partition(
+        device, uuid=efi_system_part_uuid)
+    path = tempfile.mkdtemp()
+    root_mounted = False
+    try:
+        utils.execute('mount', root_partition, path)
+        root_mounted = True
+
+        efi_partition_mount_point = os.path.join(path, 'boot/efi')
+        if _try_preserve_efi_assets(
+                device, path, efi_system_part_uuid, efi_partition,
+                efi_partition_mount_point, configure_grub=False):
+            _append_uefi_to_fstab(path, efi_system_part_uuid)
+            return True
+        return False
+    except Exception as e:
+        LOG.debug('Unable to preserve pre-installed EFI assets from the '
+                  'partition image. Error: %s', e)
+        return False
+    finally:
+        if root_mounted:
+            try:
+                utils.execute('umount', path, attempts=3,
+                              delay_on_retry=True)
+            except Exception as e:
+                LOG.debug('Failed to unmount the root partition after EFI '
+                          'asset preservation. Error: %s', e)
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _append_uefi_to_fstab(fs_path, efi_system_part_uuid):
@@ -587,7 +657,7 @@ def _efi_boot_setup(device, efi_system_part_uuid=None, target_boot_mode=None):
 
 
 def _preserve_efi_assets(path, efi_assets_folder, efi_partition,
-                         efi_partition_mount_point):
+                         efi_partition_mount_point, configure_grub=True):
     """Preserve the EFI assets in a partition image.
 
     :param path: The path used for the mounted image filesystem.
@@ -606,49 +676,47 @@ def _preserve_efi_assets(path, efi_assets_folder, efi_partition,
     try:
         save_efi = os.path.join(tempfile.mkdtemp(), 'efi_loader')
         LOG.debug('Copying EFI assets to %s.', save_efi)
-        shutil.copytree(efi_assets_folder, save_efi)
+        shutil.copytree(efi_assets_folder, save_efi,
+                        ignore=_ignore_efi_symlinks)
 
-        # Identify grub2 config file for EFI booting as grub may require it
-        # in the folder.
-
-        destlist = os.listdir(efi_assets_folder)
-        grub2_file = os.path.join(path, 'boot/grub2/grub.cfg')
-        if os.path.isfile(grub2_file):
-            LOG.debug('Local Grub2 configuration detected.')
-            # A grub2 config seems to be present, we should preserve it!
-            for dest in destlist:
-                grub_dest = os.path.join(save_efi, dest, 'grub.cfg')
-                if not os.path.isfile(grub_dest):
-                    LOG.debug('A grub.cfg file was not found in %s. %s'
-                              'will be copied to that location.',
-                              grub_dest, grub2_file)
-                    try:
-                        shutil.copy2(grub2_file, grub_dest)
-                    except (IOError, OSError, shutil.SameFileError) as e:
-                        LOG.warning('Failed to copy grub.cfg file for '
-                                    'EFI boot operation. Error %s', e)
-        grub2_env_file = os.path.join(path, 'boot/grub2/grubenv')
-        # NOTE(TheJulia): By saving the default, this file should be created.
-        # this appears to what diskimage-builder does.
-        # if the file is just a file, then we'll need to copy it. If it is
-        # anything else like a link, we're good. This behavior is inconsistent
-        # depending on packager install scripts for grub.
-        if os.path.isfile(grub2_env_file):
-            LOG.debug('Detected grub environment file %s, will attempt '
-                      'to copy this file to align with apparent bootloaders',
-                      grub2_env_file)
-            for dest in destlist:
-                grub2env_dest = os.path.join(save_efi, dest, 'grubenv')
-                if not os.path.isfile(grub2env_dest):
-                    LOG.debug('A grubenv file was not found. Copying '
-                              'to %s along with the grub.cfg file as '
-                              'grub generally expects it is present.',
-                              grub2env_dest)
-                    try:
-                        shutil.copy2(grub2_env_file, grub2env_dest)
-                    except (IOError, OSError, shutil.SameFileError) as e:
-                        LOG.warning('Failed to copy grubenv file. '
-                                    'Error: %s', e)
+        destlist = os.listdir(save_efi)
+        if configure_grub:
+            # These files come from the root image, so don't follow symlinks
+            # that could lead outside its mounted filesystem.
+            grub2_file = os.path.join(path, 'boot/grub2/grub.cfg')
+            if (not _has_symlink_component(path, grub2_file)
+                    and os.path.isfile(grub2_file)):
+                LOG.debug('Local Grub2 configuration detected.')
+                for dest in destlist:
+                    grub_dest = os.path.join(save_efi, dest, 'grub.cfg')
+                    if not os.path.isfile(grub_dest):
+                        LOG.debug('A grub.cfg file was not found in %s. %s'
+                                  'will be copied to that location.',
+                                  grub_dest, grub2_file)
+                        try:
+                            shutil.copy2(grub2_file, grub_dest)
+                        except (IOError, OSError, shutil.SameFileError) as e:
+                            LOG.warning('Failed to copy grub.cfg file for '
+                                        'EFI boot operation. Error %s', e)
+            grub2_env_file = os.path.join(path, 'boot/grub2/grubenv')
+            if (not _has_symlink_component(path, grub2_env_file)
+                    and os.path.isfile(grub2_env_file)):
+                LOG.debug(
+                    'Detected grub environment file %s, will attempt to copy '
+                    'this file to align with apparent bootloaders',
+                    grub2_env_file)
+                for dest in destlist:
+                    grub2env_dest = os.path.join(save_efi, dest, 'grubenv')
+                    if not os.path.isfile(grub2env_dest):
+                        LOG.debug('A grubenv file was not found. Copying '
+                                  'to %s along with the grub.cfg file as '
+                                  'grub generally expects it is present.',
+                                  grub2env_dest)
+                        try:
+                            shutil.copy2(grub2_env_file, grub2env_dest)
+                        except (IOError, OSError, shutil.SameFileError) as e:
+                            LOG.warning('Failed to copy grubenv file. '
+                                        'Error: %s', e)
         utils.execute('mount', '-t', 'vfat', efi_partition,
                       efi_partition_mount_point)
         shutil.copytree(save_efi, efi_assets_folder)
@@ -677,7 +745,7 @@ class ImageExtension(base.BaseAgentExtension):
                            prep_boot_part_uuid=None,
                            target_boot_mode='bios',
                            ignore_bootloader_failure=None):
-        """Install the GRUB2 bootloader on the image.
+        """Install or preserve the GRUB2 bootloader on the image.
 
         :param root_uuid: The UUID of the root partition.
         :param efi_system_part_uuid: The UUID of the efi system partition.
@@ -708,8 +776,11 @@ class ImageExtension(base.BaseAgentExtension):
                         "removed in a future release. PowerPC (ppc64*) "
                         "hardware support is being phased out.")
 
+        efi_setup_result = False
         try:
-            if _efi_boot_setup(device, efi_system_part_uuid, target_boot_mode):
+            efi_setup_result = _efi_boot_setup(
+                device, efi_system_part_uuid, target_boot_mode)
+            if efi_setup_result:
                 return
         except Exception as e:
             LOG.error('Error setting up bootloader. Error %s', e)
@@ -722,6 +793,17 @@ class ImageExtension(base.BaseAgentExtension):
             LOG.info('Not using grub2-install since root UUID is not provided.'
                      ' Assuming a whole disk image')
             return
+
+        # A partition image may include a pre-installed EFI loader under its
+        # root filesystem. Preserve those files onto the target ESP even when
+        # grub-install is disabled, without running tools from the image.
+        if (not CONF.enable_bios_bootloader_install
+                and target_boot_mode == 'uefi'
+                and efi_system_part_uuid
+                and efi_setup_result is False):
+            if _try_preserve_efi_assets_from_partition_image(
+                    device, root_uuid, efi_system_part_uuid):
+                return
 
         if CONF.enable_bios_bootloader_install:
             # In case we can't use efibootmgr for uefi we will continue
